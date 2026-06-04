@@ -2,6 +2,7 @@ package client
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -107,18 +108,25 @@ func (c *WaterbutlerClient) Download(ctx context.Context, downloadURL, destPath 
 	return nil
 }
 
+// UploadResult contains metadata returned by Waterbutler after a successful upload.
+type UploadResult struct {
+	Version int
+	MD5     string
+}
+
 // Upload sends a local file to a Waterbutler upload URL, showing a progress
 // bar unless quiet is true. Use BuildUploadURL for new files.
-func (c *WaterbutlerClient) Upload(ctx context.Context, srcPath, uploadURL string, quiet bool) error {
+// Returns UploadResult with the new version number and MD5 hash.
+func (c *WaterbutlerClient) Upload(ctx context.Context, srcPath, uploadURL string, quiet bool) (UploadResult, error) {
 	f, err := os.Open(srcPath)
 	if err != nil {
-		return fmt.Errorf("opening %s: %w", srcPath, err)
+		return UploadResult{}, fmt.Errorf("opening %s: %w", srcPath, err)
 	}
 	defer f.Close()
 
 	info, err := f.Stat()
 	if err != nil {
-		return err
+		return UploadResult{}, err
 	}
 	size := info.Size()
 
@@ -138,7 +146,7 @@ func (c *WaterbutlerClient) Upload(ctx context.Context, srcPath, uploadURL strin
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPut, uploadURL, body)
 	if err != nil {
-		return err
+		return UploadResult{}, err
 	}
 	req.ContentLength = size
 	req.Header.Set("Content-Type", "application/octet-stream")
@@ -148,15 +156,40 @@ func (c *WaterbutlerClient) Upload(ctx context.Context, srcPath, uploadURL strin
 
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return err
+		return UploadResult{}, err
 	}
 	defer resp.Body.Close()
 
+	respBody, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		respBody, _ := io.ReadAll(resp.Body)
-		return parseAPIError(resp.StatusCode, respBody)
+		return UploadResult{}, parseAPIError(resp.StatusCode, respBody)
 	}
-	return nil
+
+	return parseUploadResult(respBody), nil
+}
+
+// parseUploadResult extracts version number and MD5 from a Waterbutler upload response.
+// Returns zero value if the response cannot be parsed — callers handle gracefully.
+func parseUploadResult(body []byte) UploadResult {
+	var resp struct {
+		Data struct {
+			Attributes struct {
+				Version int `json:"version"`
+				Extra   struct {
+					Hashes struct {
+						MD5 string `json:"md5"`
+					} `json:"hashes"`
+				} `json:"extra"`
+			} `json:"attributes"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(body, &resp); err != nil {
+		return UploadResult{}
+	}
+	return UploadResult{
+		Version: resp.Data.Attributes.Version,
+		MD5:     resp.Data.Attributes.Extra.Hashes.MD5,
+	}
 }
 
 // Delete sends a DELETE request to a Waterbutler delete URL.

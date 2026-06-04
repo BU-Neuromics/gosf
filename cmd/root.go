@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/signal"
@@ -44,10 +45,18 @@ var rootCmd = &cobra.Command{
 // It installs a signal-aware context so that Ctrl-C (SIGINT) or SIGTERM
 // cancels in-flight HTTP requests and aborts long transfers cleanly.
 func Execute() {
+	rootCmd.SilenceErrors = true // we print errors ourselves below
+
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
 	if err := rootCmd.ExecuteContext(ctx); err != nil {
+		// exitCodeError: use the specified exit code with no message printed.
+		var exitErr *exitCodeError
+		if errors.As(err, &exitErr) {
+			os.Exit(exitErr.code)
+		}
+		fmt.Fprintln(os.Stderr, "Error:", err)
 		os.Exit(1)
 	}
 }
