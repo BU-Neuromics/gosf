@@ -1,0 +1,55 @@
+package cmd
+
+import (
+	"fmt"
+	"os"
+
+	"github.com/spf13/cobra"
+	"github.com/spf13/viper"
+
+	"github.com/BU-Neuromics/gosf/internal/config"
+)
+
+// version is set at build time via -ldflags "-X github.com/BU-Neuromics/gosf/cmd.version=vX.Y.Z"
+var version = "dev"
+
+// Global flag values shared across commands.
+var (
+	flagToken  string
+	flagOutput string
+	flagQuiet  bool
+)
+
+var rootCmd = &cobra.Command{
+	Use:          "gosf",
+	Short:        "CLI for the Open Science Framework (osf.io)",
+	Long:         "gosf — push, pull, and manage files on the Open Science Framework.",
+	SilenceUsage: true,
+	Version:      version,
+	PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+		if err := config.InitViper(); err != nil {
+			return fmt.Errorf("loading config: %w", err)
+		}
+		if flagOutput != "text" && flagOutput != "json" {
+			return fmt.Errorf("--output must be 'text' or 'json', got %q", flagOutput)
+		}
+		return nil
+	},
+}
+
+// Execute runs the root command and exits with a non-zero code on error.
+func Execute() {
+	if err := rootCmd.Execute(); err != nil {
+		os.Exit(1)
+	}
+}
+
+func init() {
+	rootCmd.PersistentFlags().StringVar(&flagToken, "token", "", "OSF personal access token (overrides env/config/keychain)")
+	rootCmd.PersistentFlags().StringVar(&flagOutput, "output", "text", "Output format: text or json")
+	rootCmd.PersistentFlags().BoolVarP(&flagQuiet, "quiet", "q", false, "Suppress progress and non-error output")
+
+	// Bind OSF_TOKEN env var via viper so --token and OSF_TOKEN work the same way.
+	viper.SetEnvPrefix("OSF")
+	viper.AutomaticEnv()
+}
