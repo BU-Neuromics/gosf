@@ -39,7 +39,17 @@ Examples:
 		}
 
 		if flagOutput == "json" {
+			if items == nil {
+				items = []client.FileItem{} // serialise as [] not null
+			}
 			return output.PrintJSON(os.Stdout, items)
+		}
+
+		if len(items) == 0 {
+			if !flagQuiet {
+				fmt.Fprintln(os.Stderr, "(empty)")
+			}
+			return nil
 		}
 
 		printFileTable(items)

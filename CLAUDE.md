@@ -101,6 +101,28 @@ gosf/
 - `--quiet` suppresses progress/non-error output
 - Proper non-zero exit codes on errors
 
+### `--output=json` contract
+
+Every command supports `--output=json`. Result types live in
+`internal/output/result.go` so the contract is explicit and unit-tested.
+JSON goes to stdout; progress bars are suppressed in JSON mode.
+
+| Command | JSON shape |
+|---------|-----------|
+| `ls` | array of file objects (`[]` when empty, never `null`) |
+| `info` | the node object |
+| `projects` | array of node objects |
+| `open` | `{"url": "..."}` (does not launch a browser) |
+| `pull` | `{"downloaded": [{"path","size"}], "dry_run": bool}` |
+| `push` | `{"uploaded": [{"path","action"}], "dry_run": bool}` where action ∈ upload\|overwrite\|rename\|skip |
+| `rm` | `{"node","path","kind","dry_run"}` — requires `--yes` (no interactive prompt in JSON mode) |
+
+### Cancellation
+
+`Execute` installs a `signal.NotifyContext` (SIGINT/SIGTERM) and runs via
+`ExecuteContext`. Commands use `cmd.Context()`, so Ctrl-C cancels in-flight
+HTTP requests and aborts transfers. A failed download removes its partial file.
+
 ## OSF API notes
 
 ### JSON:API response shapes
