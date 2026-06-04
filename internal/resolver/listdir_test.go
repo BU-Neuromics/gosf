@@ -12,10 +12,10 @@ import (
 // root holds the storage-root listing; byURL maps a folder's related href to
 // its children.
 type fakeLister struct {
-	root     []client.FileItem
-	byURL    map[string][]client.FileItem
-	rootErr  error
-	urlErr   map[string]error
+	root      []client.FileItem
+	byURL     map[string][]client.FileItem
+	rootErr   error
+	urlErr    map[string]error
 	rootCalls int
 	urlCalls  map[string]int
 }
@@ -56,12 +56,13 @@ func file(name string, size int64) client.FileItem {
 }
 
 // sampleTree builds:
-//   /
-//   ├── data/            (href "u-data")
-//   │   ├── results/     (href "u-results")
-//   │   │   └── out.csv
-//   │   └── a.csv
-//   └── readme.txt
+//
+//	/
+//	├── data/            (href "u-data")
+//	│   ├── results/     (href "u-results")
+//	│   │   └── out.csv
+//	│   └── a.csv
+//	└── readme.txt
 func sampleTree() *fakeLister {
 	return &fakeLister{
 		root: []client.FileItem{

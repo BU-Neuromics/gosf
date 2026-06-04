@@ -182,9 +182,28 @@ component (child node) GUID. The path is resolved under `xyz34`.
 ## Development notes
 
 - Build: `go build -o gosf .`
-- Test: `go test ./...`
-- Lint: `golangci-lint run`
+- Test: `go test ./...` (and `go test -race ./...`)
+- Format check: `gofmt -l .` (must print nothing)
+- Vet: `go vet ./...`
 - The OSF API requires no auth for public projects; token elevates to private
+
+### CI / Release
+
+- `.github/workflows/ci.yml` runs on every push to `main` and every PR:
+  gofmt check, `go vet`, `go test -race`, a build, and a cross-compile matrix
+  over linux/darwin/windows × amd64/arm64. The Go version is read from
+  `go.mod` via `go-version-file`, so bumping the toolchain is a one-line change.
+- `.github/workflows/release.yml` runs on a `v*` tag push and invokes
+  GoReleaser (`release --clean`) using `.goreleaser.yaml` to build and publish
+  the cross-platform archives + checksums to a GitHub Release.
+- To cut a release: tag `vX.Y.Z` and push the tag. The version is injected into
+  the binary via `-ldflags -X .../cmd.version=<version>`.
+- Validate the release config locally with `goreleaser check` and
+  `goreleaser build --snapshot --clean --single-target`.
+- `golangci-lint` is **not** yet wired into CI: the default linter set flags
+  ~30 `errcheck` findings (mostly `fmt.Fprint*` to stdout/stderr and deferred
+  `Close()`). Adding it requires either addressing those or committing a tuned
+  `.golangci.yml` first — tracked as a follow-up.
 
 ---
 
