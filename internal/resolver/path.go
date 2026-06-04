@@ -120,6 +120,36 @@ func (r *Resolver) ListDir(ctx context.Context, nodeID, path string) ([]client.F
 	return items, nil
 }
 
+// Resolve returns the FileItem at the exact path (a file or a folder),
+// including its action links. Unlike ListDir, it returns the item itself
+// rather than its children, which is what callers like `rm` need.
+//
+// The root path ("/") cannot be resolved to an item and returns an error.
+// A listing failure is propagated as-is, never masked as "not found".
+func (r *Resolver) Resolve(ctx context.Context, nodeID, path string) (client.FileItem, error) {
+	trimmed := strings.Trim(path, "/")
+	if trimmed == "" {
+		return client.FileItem{}, fmt.Errorf("cannot resolve root path to an item")
+	}
+
+	idx := strings.LastIndexByte(trimmed, '/')
+	parent := "/"
+	name := trimmed
+	if idx >= 0 {
+		parent = "/" + trimmed[:idx]
+		name = trimmed[idx+1:]
+	}
+
+	siblings, err := r.ListDir(ctx, nodeID, parent)
+	if err != nil {
+		return client.FileItem{}, err
+	}
+	if item, ok := findItem(siblings, name); ok {
+		return item, nil
+	}
+	return client.FileItem{}, fmt.Errorf("path not found: %s", path)
+}
+
 func findItem(items []client.FileItem, name string) (client.FileItem, bool) {
 	for _, item := range items {
 		if item.Attributes.Name == name {

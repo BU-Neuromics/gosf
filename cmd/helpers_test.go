@@ -40,24 +40,30 @@ func TestFindFreeName(t *testing.T) {
 	}
 }
 
-func TestSplitPath(t *testing.T) {
+func TestDeriveUploadTarget(t *testing.T) {
 	cases := []struct {
-		path       string
+		dest       string
+		src        string
 		wantParent string
 		wantName   string
 	}{
-		{"/data/results", "/data/", "results"},
-		{"/data/results/", "/data/", "results"},
-		{"/file.csv", "/", "file.csv"},
-		{"/data/sub/file.csv", "/data/sub/", "file.csv"},
-		{"file.csv", "/", "file.csv"},
+		// Explicit filename in dest.
+		{"/data/out.csv", "in.csv", "/data", "out.csv"},
+		{"/out.csv", "in.csv", "/", "out.csv"},
+		{"/data/sub/out.csv", "in.csv", "/data/sub", "out.csv"},
+		// Trailing slash => destination is a directory, keep source filename.
+		{"/data/", "in.csv", "/data", "in.csv"},
+		{"/data/sub/", "report.pdf", "/data/sub", "report.pdf"},
+		{"/", "in.csv", "/", "in.csv"},
+		// Bare/empty dest behaves like root directory.
+		{"", "in.csv", "/", "in.csv"},
 	}
 	for _, tc := range cases {
-		t.Run(tc.path, func(t *testing.T) {
-			parent, name := splitPath(tc.path)
+		t.Run(tc.dest, func(t *testing.T) {
+			parent, name := deriveUploadTarget(tc.dest, tc.src)
 			if parent != tc.wantParent || name != tc.wantName {
-				t.Errorf("splitPath(%q) = (%q, %q), want (%q, %q)",
-					tc.path, parent, name, tc.wantParent, tc.wantName)
+				t.Errorf("deriveUploadTarget(%q, %q) = (%q, %q), want (%q, %q)",
+					tc.dest, tc.src, parent, name, tc.wantParent, tc.wantName)
 			}
 		})
 	}

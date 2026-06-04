@@ -2,6 +2,7 @@ package resolver
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	"github.com/BU-Neuromics/gosf/internal/client"
@@ -180,3 +181,66 @@ func TestListDir_TraverseThroughFile(t *testing.T) {
 		t.Fatal("expected error when traversing through a file")
 	}
 }
+
+func TestResolve_File(t *testing.T) {
+	r := New(sampleTree())
+	item, err := r.Resolve(context.Background(), "abc12", "/data/a.csv")
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if item.Attributes.Name != "a.csv" || item.Attributes.Kind != "file" {
+		t.Errorf("got %+v, want file a.csv", item.Attributes)
+	}
+}
+
+func TestResolve_Folder(t *testing.T) {
+	r := New(sampleTree())
+	item, err := r.Resolve(context.Background(), "abc12", "/data")
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if item.Attributes.Name != "data" || item.Attributes.Kind != "folder" {
+		t.Errorf("got %+v, want folder data", item.Attributes)
+	}
+}
+
+func TestResolve_NestedFolder(t *testing.T) {
+	r := New(sampleTree())
+	item, err := r.Resolve(context.Background(), "abc12", "/data/results")
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if item.Attributes.Name != "results" || item.Attributes.Kind != "folder" {
+		t.Errorf("got %+v, want folder results", item.Attributes)
+	}
+}
+
+func TestResolve_Root(t *testing.T) {
+	r := New(sampleTree())
+	_, err := r.Resolve(context.Background(), "abc12", "/")
+	if err == nil {
+		t.Fatal("expected error resolving root path")
+	}
+}
+
+func TestResolve_NotFound(t *testing.T) {
+	r := New(sampleTree())
+	_, err := r.Resolve(context.Background(), "abc12", "/data/missing.csv")
+	if err == nil {
+		t.Fatal("expected error for missing item")
+	}
+}
+
+// TestResolve_PropagatesListingError ensures a listing failure surfaces as the
+// real error, not a misleading "not found".
+func TestResolve_PropagatesListingError(t *testing.T) {
+	tree := sampleTree()
+	tree.rootErr = errSentinel
+	r := New(tree)
+	_, err := r.Resolve(context.Background(), "abc12", "/data")
+	if err != errSentinel {
+		t.Fatalf("got %v, want sentinel listing error", err)
+	}
+}
+
+var errSentinel = fmt.Errorf("listing failed")

@@ -50,21 +50,10 @@ Examples:
 		osfClient := client.New(token)
 		res := resolver.New(osfClient)
 
-		// Resolve path to the target item.
-		items, err := res.ListDir(context.Background(), target.NodeID, target.Path)
+		// Resolve the path to the exact item (file or folder) and its links.
+		item, err := res.Resolve(context.Background(), target.NodeID, target.Path)
 		if err != nil {
 			return err
-		}
-		if len(items) == 0 {
-			return fmt.Errorf("path not found: %s", target.Path)
-		}
-
-		// If path resolved to a directory listing (multiple items), the path itself
-		// IS the folder we want to delete — we need its delete link. Resolve
-		// the parent dir to find it.
-		item, err := resolveItemAtPath(context.Background(), osfClient, res, target.NodeID, target.Path)
-		if err != nil {
-			return fmt.Errorf("resolving %s: %w", target.Path, err)
 		}
 
 		if item.Links.Delete == "" {
@@ -98,47 +87,6 @@ Examples:
 		}
 		return nil
 	},
-}
-
-// resolveItemAtPath returns the FileItem for the exact path (not its children).
-// For a file path, ListDir already returns the single item. For a folder path,
-// we need to look it up in the parent directory listing.
-func resolveItemAtPath(
-	ctx context.Context,
-	osfClient *client.OSFClient,
-	res *resolver.Resolver,
-	nodeID, path string,
-) (client.FileItem, error) {
-	// Try as a file first (ListDir returns single item for files).
-	items, err := res.ListDir(ctx, nodeID, path)
-	if err != nil {
-		return client.FileItem{}, err
-	}
-	if len(items) == 1 && items[0].Attributes.Kind == "file" {
-		return items[0], nil
-	}
-
-	// It's a folder — find it in the parent listing.
-	parentPath, folderName := splitPath(path)
-	parentItems, err := res.ListDir(ctx, nodeID, parentPath)
-	if err != nil {
-		return client.FileItem{}, err
-	}
-	for _, item := range parentItems {
-		if item.Attributes.Name == folderName {
-			return item, nil
-		}
-	}
-	return client.FileItem{}, fmt.Errorf("item not found at %s", path)
-}
-
-// splitPath returns (parent, name) for a path like "/data/results".
-func splitPath(path string) (parent, name string) {
-	path = strings.TrimRight(path, "/")
-	if idx := strings.LastIndexByte(path, '/'); idx >= 0 {
-		return path[:idx+1], path[idx+1:]
-	}
-	return "/", path
 }
 
 // confirm prints a [y/N] prompt and returns true if the user types y/yes.

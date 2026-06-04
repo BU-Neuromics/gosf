@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/spf13/viper"
@@ -116,6 +117,24 @@ func TestDeleteToken_ClearsKeychainAndFile(t *testing.T) {
 	}
 	if got := LoadToken(""); got != "" {
 		t.Errorf("LoadToken after delete = %q, want empty", got)
+	}
+}
+
+// TestDeleteToken_SurfacesKeychainError verifies that a real keychain failure
+// (not a benign "not found") is reported rather than silently swallowed.
+func TestDeleteToken_SurfacesKeychainError(t *testing.T) {
+	viper.Reset()
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("OSF_TOKEN", "")
+	keyring.MockInitWithError(fmt.Errorf("keychain is locked"))
+	defer keyring.MockInit() // restore clean mock for later tests
+
+	if err := InitViper(); err != nil {
+		t.Fatalf("InitViper: %v", err)
+	}
+	err := DeleteToken()
+	if err == nil {
+		t.Fatal("expected DeleteToken to surface the keychain error, got nil")
 	}
 }
 

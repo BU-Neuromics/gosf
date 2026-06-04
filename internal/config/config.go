@@ -85,9 +85,23 @@ func SaveToken(token string, noKeychain bool) error {
 }
 
 // DeleteToken removes the token from both the keychain and the config file.
+// A "not found" keychain result is treated as success; any other keychain
+// error is surfaced (combined with a config-write error if both fail).
 func DeleteToken() error {
-	_ = keyring.Delete(keychainService, keychainUser)
-	return writeTokenToFile("")
+	kerr := keyring.Delete(keychainService, keychainUser)
+	if kerr == keyring.ErrNotFound {
+		kerr = nil
+	}
+	ferr := writeTokenToFile("")
+
+	switch {
+	case kerr != nil && ferr != nil:
+		return fmt.Errorf("removing token from keychain (%v) and config file: %w", kerr, ferr)
+	case kerr != nil:
+		return fmt.Errorf("removing token from keychain: %w", kerr)
+	default:
+		return ferr
+	}
 }
 
 func writeTokenToFile(token string) error {
