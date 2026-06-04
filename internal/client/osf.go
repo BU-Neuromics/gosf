@@ -248,3 +248,61 @@ func (c *OSFClient) listFilesFromURL(ctx context.Context, url string) ([]FileIte
 	}
 	return all, nil
 }
+
+// FileVersion represents one version of a file.
+type FileVersion struct {
+	ID         string                `json:"id"`
+	Attributes FileVersionAttributes `json:"attributes"`
+	Embeds     struct {
+		User struct {
+			Data User `json:"data"`
+		} `json:"user"`
+	} `json:"embeds"`
+}
+
+// FileVersionAttributes holds per-version metadata.
+type FileVersionAttributes struct {
+	Version     int    `json:"version"`
+	Size        int64  `json:"size"`
+	DateCreated string `json:"date_created"`
+	ContentType string `json:"content_type"`
+}
+
+// Contributor returns the best available identifier for the user who created this version:
+// email_primary > full_name > GUID.
+func (v FileVersion) Contributor() string {
+	u := v.Embeds.User.Data
+	if u.Attributes.EmailPrimary != "" {
+		return u.Attributes.EmailPrimary
+	}
+	if u.Attributes.FullName != "" {
+		return u.Attributes.FullName
+	}
+	return u.ID
+}
+
+// GetFileVersions returns all versions of a file, newest-first, with embedded user info.
+func (c *OSFClient) GetFileVersions(ctx context.Context, fileID string) ([]FileVersion, error) {
+	url := fmt.Sprintf("%s/files/%s/versions/?embed=user", c.baseURL, fileID)
+	return c.listVersionsFromURL(ctx, url)
+}
+
+type versionsPage struct {
+	Data  []FileVersion `json:"data"`
+	Links struct {
+		Next string `json:"next"`
+	} `json:"links"`
+}
+
+func (c *OSFClient) listVersionsFromURL(ctx context.Context, url string) ([]FileVersion, error) {
+	var all []FileVersion
+	for url != "" {
+		var page versionsPage
+		if err := c.getJSON(ctx, url, &page); err != nil {
+			return nil, err
+		}
+		all = append(all, page.Data...)
+		url = page.Links.Next
+	}
+	return all, nil
+}

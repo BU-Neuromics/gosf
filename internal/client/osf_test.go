@@ -244,3 +244,99 @@ func TestListFilesParsesLinksAndKind(t *testing.T) {
 		t.Error("file links not parsed")
 	}
 }
+
+func TestGetFileVersions_HappyPath(t *testing.T) {
+	var gotPath, gotQuery string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		gotQuery = r.URL.RawQuery
+		fmt.Fprint(w, `{"data":[
+			{"id":"3","attributes":{"version":3,"size":300,"date_created":"2024-03-01T00:00:00","content_type":"text/csv"},
+			 "embeds":{"user":{"data":{"id":"u1","attributes":{"full_name":"Ada Lovelace","email_primary":"ada@example.com"}}}}},
+			{"id":"2","attributes":{"version":2,"size":200,"date_created":"2024-02-01T00:00:00","content_type":"text/csv"},
+			 "embeds":{"user":{"data":{"id":"u2","attributes":{"full_name":"Bob Smith","email_primary":""}}}}},
+			{"id":"1","attributes":{"version":1,"size":100,"date_created":"2024-01-01T00:00:00","content_type":"text/csv"},
+			 "embeds":{"user":{"data":{"id":"u3","attributes":{"full_name":"","email_primary":""}}}}}
+		],"links":{"next":null}}`)
+	}))
+	defer srv.Close()
+
+	c := newTestClient("tok", srv.URL)
+	versions, err := c.GetFileVersions(context.Background(), "file123")
+	if err != nil {
+		t.Fatalf("GetFileVersions: %v", err)
+	}
+	if gotPath != "/files/file123/versions/" {
+		t.Errorf("path = %q, want /files/file123/versions/", gotPath)
+	}
+	if gotQuery != "embed=user" {
+		t.Errorf("query = %q, want embed=user", gotQuery)
+	}
+	if len(versions) != 3 {
+		t.Fatalf("got %d versions, want 3", len(versions))
+	}
+
+	// version 3: email_primary wins
+	if versions[0].Attributes.Version != 3 {
+		t.Errorf("versions[0].Version = %d, want 3", versions[0].Attributes.Version)
+	}
+	if versions[0].Contributor() != "ada@example.com" {
+		t.Errorf("Contributor = %q, want ada@example.com", versions[0].Contributor())
+	}
+	// version 2: full_name fallback
+	if versions[1].Contributor() != "Bob Smith" {
+		t.Errorf("Contributor = %q, want Bob Smith", versions[1].Contributor())
+	}
+	// version 1: GUID fallback
+	if versions[2].Contributor() != "u3" {
+		t.Errorf("Contributor = %q, want u3", versions[2].Contributor())
+	}
+}
+
+func TestGetFileVersions_404(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(404)
+		fmt.Fprint(w, `{"errors":[{"detail":"Not found."}]}`)
+	}))
+	defer srv.Close()
+
+	c := newTestClient("tok", srv.URL)
+	_, err := c.GetFileVersions(context.Background(), "badid")
+	if err == nil {
+		t.Fatal("expected error for 404, got nil")
+	}
+	apiErr, ok := err.(*APIError)
+	if !ok {
+		t.Fatalf("expected *APIError, got %T", err)
+	}
+	if apiErr.StatusCode != 404 {
+		t.Errorf("StatusCode = %d, want 404", apiErr.StatusCode)
+	}
+}
+
+func TestGetFileVersions_Pagination(t *testing.T) {
+	var srv *httptest.Server
+	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("page") == "2" {
+			fmt.Fprint(w, `{"data":[
+				{"id":"1","attributes":{"version":1,"size":100,"date_created":"2024-01-01T00:00:00"},
+				 "embeds":{"user":{"data":{"id":"u1","attributes":{"full_name":"A","email_primary":""}}}}}
+			],"links":{"next":null}}`)
+			return
+		}
+		fmt.Fprintf(w, `{"data":[
+			{"id":"2","attributes":{"version":2,"size":200,"date_created":"2024-02-01T00:00:00"},
+			 "embeds":{"user":{"data":{"id":"u1","attributes":{"full_name":"A","email_primary":""}}}}}
+		],"links":{"next":"%s/files/fid/versions/?embed=user&page=2"}}`, srv.URL)
+	}))
+	defer srv.Close()
+
+	c := newTestClient("tok", srv.URL)
+	versions, err := c.GetFileVersions(context.Background(), "fid")
+	if err != nil {
+		t.Fatalf("GetFileVersions: %v", err)
+	}
+	if len(versions) != 2 {
+		t.Fatalf("got %d versions across pages, want 2", len(versions))
+	}
+}

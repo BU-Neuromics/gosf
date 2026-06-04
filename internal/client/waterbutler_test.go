@@ -1,6 +1,9 @@
 package client
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestBuildUploadURL(t *testing.T) {
 	cases := []struct {
@@ -36,6 +39,35 @@ func TestBuildUploadURL(t *testing.T) {
 		if got != tc.want {
 			t.Errorf("BuildUploadURL(%q, %q, %q)\n  got  %s\n  want %s",
 				tc.nodeID, tc.parentPath, tc.filename, got, tc.want)
+		}
+	}
+}
+
+func TestRevisionURL(t *testing.T) {
+	cases := []struct {
+		base     string
+		revision int
+		want     string
+	}{
+		{
+			"https://files.osf.io/v1/resources/abc12/providers/osfstorage/file.csv",
+			2,
+			"https://files.osf.io/v1/resources/abc12/providers/osfstorage/file.csv?revision=2",
+		},
+		{
+			"https://files.osf.io/v1/resources/abc12/providers/osfstorage/file.csv?mode=render",
+			3,
+			"https://files.osf.io/v1/resources/abc12/providers/osfstorage/file.csv?mode=render&revision=3",
+		},
+	}
+
+	for _, tc := range cases {
+		got := RevisionURL(tc.base, tc.revision)
+		if got != tc.want {
+			t.Errorf("RevisionURL(%q, %d)\n  got  %s\n  want %s", tc.base, tc.revision, got, tc.want)
+		}
+		if !strings.Contains(got, "revision=") {
+			t.Errorf("RevisionURL missing revision parameter: %s", got)
 		}
 	}
 }

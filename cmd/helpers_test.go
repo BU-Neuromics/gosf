@@ -127,6 +127,49 @@ func TestDeriveUploadTarget(t *testing.T) {
 	}
 }
 
+func TestValidateVersion(t *testing.T) {
+	versions := []client.FileVersion{
+		{ID: "3", Attributes: client.FileVersionAttributes{Version: 3}},
+		{ID: "2", Attributes: client.FileVersionAttributes{Version: 2}},
+		{ID: "1", Attributes: client.FileVersionAttributes{Version: 1}},
+	}
+
+	t.Run("valid version", func(t *testing.T) {
+		if err := validateVersion(versions, 2); err != nil {
+			t.Errorf("unexpected error: %v", err)
+		}
+	})
+	t.Run("missing version", func(t *testing.T) {
+		err := validateVersion(versions, 99)
+		if err == nil {
+			t.Fatal("expected error for missing version")
+		}
+		// Error should mention the requested version and how to list them.
+		msg := err.Error()
+		if !contains(msg, "99") || !contains(msg, "versions") {
+			t.Errorf("unhelpful error: %q", msg)
+		}
+	})
+	t.Run("no versions at all", func(t *testing.T) {
+		if err := validateVersion(nil, 1); err == nil {
+			t.Fatal("expected error when no versions exist")
+		}
+	})
+}
+
+// contains is a tiny helper so we don't import strings just for tests.
+func contains(s, sub string) bool {
+	return len(s) >= len(sub) && (s == sub || len(sub) == 0 ||
+		func() bool {
+			for i := 0; i <= len(s)-len(sub); i++ {
+				if s[i:i+len(sub)] == sub {
+					return true
+				}
+			}
+			return false
+		}())
+}
+
 func TestBuildOSFWebURL(t *testing.T) {
 	cases := []struct {
 		target resolver.Target

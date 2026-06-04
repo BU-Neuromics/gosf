@@ -57,3 +57,22 @@ func NewPushResult(dryRun bool) *PushResult {
 func (r *PushResult) Add(path, action string) {
 	r.Uploaded = append(r.Uploaded, TransferItem{Path: path, Action: action})
 }
+
+// VersionItem describes one version in the versions list.
+type VersionItem struct {
+	Version     int    `json:"version"`
+	DateCreated string `json:"date_created"`
+	Size        int64  `json:"size"`
+	Contributor string `json:"contributor"`
+}
+
+// VersionsResult is emitted by `gosf versions --output=json`.
+type VersionsResult struct {
+	Versions []VersionItem `json:"versions"`
+}
+
+// NewVersionsResult returns a VersionsResult with a non-nil slice so it
+// serialises as [] rather than null when empty.
+func NewVersionsResult() *VersionsResult {
+	return &VersionsResult{Versions: []VersionItem{}}
+}
