@@ -168,6 +168,55 @@ component (child node) GUID. The path is resolved under `xyz34`.
 
 ## Development strategy
 
+### Test-driven development (REQUIRED)
+
+This project follows test-driven development. The rule is non-negotiable:
+
+> **Write the failing test first. Watch it fail. Then write the code that makes
+> it pass.**
+
+Concretely, for every change — a new command, a bug fix, a new helper:
+
+1. **Red** — Write a test that encodes the desired behaviour. Run it; confirm it
+   fails for the *expected* reason (not a compile error in the test itself).
+2. **Green** — Write the minimum production code to make the test pass.
+3. **Refactor** — Clean up with the test as a safety net.
+
+**Bug fixes start with a regression test.** Before fixing any bug, write a test
+that reproduces it and fails. The fix is done when that test goes green. This is
+how we prevent the same class of bug twice. If a bug shipped, it means a test
+was missing — add it.
+
+**No production logic lands without a test that exercises it.** The only
+exceptions are thin glue that cannot fail in isolation (e.g. a Cobra `RunE` that
+only wires flags to an already-tested function, or a `main()`). Push the real
+logic *out* of those glue layers and into tested functions.
+
+#### What this means in practice
+
+- **Pure functions** (`ParseTarget`, `BuildUploadURL`, `FormatSize`,
+  `findFreeName`, `splitPath`, `buildOSFWebURL`): test directly with table tests.
+- **HTTP clients** (`internal/client`): test against `httptest.Server`. The
+  client base URLs are injectable fields so tests point them at the test server.
+  Cover happy path, pagination, and every error status the command maps.
+- **Path resolution** (`internal/resolver`): the `Resolver` depends on a
+  `FileLister` interface, not the concrete client. Test `ListDir` with a mock
+  that returns canned `FileItem` trees — no network.
+- **Config** (`internal/config`): use `keyring.MockInit()` and a temp
+  `XDG_CONFIG_HOME`/`os.UserConfigDir` so tests never touch the real keychain or
+  the developer's config. Cover the full token priority chain.
+- **Command glue** (`cmd`): keep `RunE` bodies thin. Extract decision logic into
+  functions in `internal/` and test those. Filesystem-touching behaviour
+  (download cleanup, dest path resolution) is tested with `t.TempDir()`.
+
+#### Testability rules for new code
+
+- Any new dependency on the network, filesystem, clock, or keychain must be
+  reachable behind an interface or an injectable field so it can be faked.
+- Never call `os.Exit` outside `cmd.Execute`; return errors so they're testable.
+- Prefer returning values over printing; a function that builds a string is
+  testable, one that writes to `os.Stdout` is not (without capture).
+
 ### Branching model
 
 All work happens on feature branches cut from `main`. One branch per logical
@@ -177,13 +226,14 @@ delete the branch, pull main, repeat.
 ### Definition of done (per command)
 
 A command is considered done when:
-1. It compiles cleanly (`go build`)
-2. It passes `go test ./...`
-3. It produces correct output against the live OSF API (verified manually or
+1. **A test was written first and failed before the implementation existed**
+2. It compiles cleanly (`go build`)
+3. It passes `go test ./...`, and the new logic is covered by tests
+4. It produces correct output against the live OSF API (verified manually or
    with a recorded HTTP fixture)
-4. `--output=json` emits valid, parseable JSON
-5. Non-zero exit code on all error paths
-6. Help text (`--help`) is complete
+5. `--output=json` emits valid, parseable JSON
+6. Non-zero exit code on all error paths
+7. Help text (`--help`) is complete
 
 Stub commands (`return fmt.Errorf("not yet implemented")`) do **not** land in
 `main`. Each PR must take stubs to done.

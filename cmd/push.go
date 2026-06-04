@@ -80,12 +80,7 @@ func pushFile(
 	srcPath, nodeID, destPath string,
 ) error {
 	// Split destination into parent dir and filename.
-	destPath = "/" + strings.TrimPrefix(destPath, "/")
-	parentDir := filepath.Dir(destPath)  // e.g. "/data/results"
-	filename := filepath.Base(destPath)  // e.g. "file.csv"
-	if filename == "." || filename == "/" {
-		filename = filepath.Base(srcPath)
-	}
+	parentDir, filename := deriveUploadTarget(destPath, srcPath)
 
 	// List parent dir to detect conflicts.
 	res := resolver.New(osfClient)
@@ -126,6 +121,43 @@ func pushFile(
 	}
 
 	return wb.Upload(ctx, srcPath, uploadURL, flagQuiet)
+}
+
+// deriveUploadTarget splits an OSF destination path into the parent directory
+// and the filename to upload as.
+//
+//   - A trailing slash means the destination is a directory: the source file
+//     keeps its own name (e.g. "/data/" + "in.csv" → "/data", "in.csv").
+//   - Otherwise the last path segment is the explicit target filename
+//     (e.g. "/data/out.csv" → "/data", "out.csv").
+//
+// An empty destination is treated as the storage root.
+func deriveUploadTarget(destPath, srcPath string) (parentDir, filename string) {
+	if destPath == "" {
+		destPath = "/"
+	}
+	isDir := strings.HasSuffix(destPath, "/")
+	destPath = "/" + strings.Trim(destPath, "/")
+
+	if isDir {
+		// Destination is a directory; keep the source's basename.
+		return cleanParent(destPath), filepath.Base(srcPath)
+	}
+
+	parent := filepath.Dir(destPath)
+	name := filepath.Base(destPath)
+	if name == "." || name == "/" || name == "" {
+		// No explicit filename — fall back to the source basename.
+		return cleanParent(destPath), filepath.Base(srcPath)
+	}
+	return cleanParent(parent), name
+}
+
+// cleanParent normalises a parent directory path to start with "/" and have no
+// trailing slash (except the root itself, which stays "/").
+func cleanParent(p string) string {
+	p = "/" + strings.Trim(p, "/")
+	return p
 }
 
 // resolveUploadURL decides which Waterbutler URL to use based on conflict mode,
