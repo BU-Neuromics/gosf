@@ -266,6 +266,11 @@ type FileVersionAttributes struct {
 	Size        int64  `json:"size"`
 	DateCreated string `json:"date_created"`
 	ContentType string `json:"content_type"`
+	Extra       struct {
+		Hashes struct {
+			MD5 string `json:"md5"`
+		} `json:"hashes"`
+	} `json:"extra"`
 }
 
 // Contributor returns the best available identifier for the user who created this version:

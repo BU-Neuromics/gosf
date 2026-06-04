@@ -251,11 +251,14 @@ func TestGetFileVersions_HappyPath(t *testing.T) {
 		gotPath = r.URL.Path
 		gotQuery = r.URL.RawQuery
 		fmt.Fprint(w, `{"data":[
-			{"id":"3","attributes":{"version":3,"size":300,"date_created":"2024-03-01T00:00:00","content_type":"text/csv"},
+			{"id":"3","attributes":{"version":3,"size":300,"date_created":"2024-03-01T00:00:00","content_type":"text/csv",
+			 "extra":{"hashes":{"md5":"aaa111"}}},
 			 "embeds":{"user":{"data":{"id":"u1","attributes":{"full_name":"Ada Lovelace","email_primary":"ada@example.com"}}}}},
-			{"id":"2","attributes":{"version":2,"size":200,"date_created":"2024-02-01T00:00:00","content_type":"text/csv"},
+			{"id":"2","attributes":{"version":2,"size":200,"date_created":"2024-02-01T00:00:00","content_type":"text/csv",
+			 "extra":{"hashes":{"md5":"bbb222"}}},
 			 "embeds":{"user":{"data":{"id":"u2","attributes":{"full_name":"Bob Smith","email_primary":""}}}}},
-			{"id":"1","attributes":{"version":1,"size":100,"date_created":"2024-01-01T00:00:00","content_type":"text/csv"},
+			{"id":"1","attributes":{"version":1,"size":100,"date_created":"2024-01-01T00:00:00","content_type":"text/csv",
+			 "extra":{"hashes":{"md5":"ccc333"}}},
 			 "embeds":{"user":{"data":{"id":"u3","attributes":{"full_name":"","email_primary":""}}}}}
 		],"links":{"next":null}}`)
 	}))
@@ -279,6 +282,12 @@ func TestGetFileVersions_HappyPath(t *testing.T) {
 	// version 3: email_primary wins
 	if versions[0].Attributes.Version != 3 {
 		t.Errorf("versions[0].Version = %d, want 3", versions[0].Attributes.Version)
+	}
+	if versions[0].Attributes.Extra.Hashes.MD5 != "aaa111" {
+		t.Errorf("versions[0].MD5 = %q, want aaa111", versions[0].Attributes.Extra.Hashes.MD5)
+	}
+	if versions[1].Attributes.Extra.Hashes.MD5 != "bbb222" {
+		t.Errorf("versions[1].MD5 = %q, want bbb222", versions[1].Attributes.Extra.Hashes.MD5)
 	}
 	if versions[0].Contributor() != "ada@example.com" {
 		t.Errorf("Contributor = %q, want ada@example.com", versions[0].Contributor())

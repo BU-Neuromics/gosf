@@ -23,6 +23,9 @@ gosf auth login
 gosf auth status
 gosf auth logout
 gosf open     <project>[:<path>]
+gosf add      <local-path> <project>:<remote-path>
+gosf status
+gosf sync
 ```
 
 Path convention: `abc12:/data/results/file.csv`
@@ -70,22 +73,29 @@ This is the core complexity — isolated in `internal/resolver/path.go`.
 ```
 gosf/
 ├── cmd/
-│   ├── root.go         # root command, global flags, version
+│   ├── root.go              # root command, global flags, version
 │   ├── ls.go
-│   ├── pull.go         # --version=<n> flag for specific version download
-│   ├── push.go
+│   ├── pull.go              # --version=<n> flag for specific version download
+│   ├── push.go              # manifest direction enforcement + manifest update on push
 │   ├── rm.go
-│   ├── versions.go     # gosf versions <project>:<path>
+│   ├── versions.go          # gosf versions <project>:<path>
 │   ├── projects.go
 │   ├── info.go
 │   ├── auth.go
-│   └── open.go
+│   ├── open.go
+│   ├── add.go               # gosf add — add entry to gosf.toml
+│   ├── status.go            # gosf status — show manifest sync status
+│   ├── sync.go              # gosf sync — push/pull according to manifest
+│   └── manifest_helpers.go  # computeLocalMD5, fileVersionsToRemote, latestRemoteVersion
 ├── internal/
 │   ├── client/
 │   │   ├── osf.go          # JSON:API metadata client
-│   │   └── waterbutler.go  # file transfer client
+│   │   └── waterbutler.go  # file transfer client; Upload returns UploadResult
 │   ├── resolver/
 │   │   └── path.go         # path string → Waterbutler URLs
+│   ├── manifest/
+│   │   ├── manifest.go     # Load, Save, FindManifest, Entry, Manifest types
+│   │   └── status.go       # ClassifyFile, FileState, RemoteVersion
 │   ├── config/
 │   │   └── config.go       # config file + keychain + env
 │   └── output/
@@ -183,6 +193,108 @@ All list endpoints paginate. Check `links.next` and follow until null.
 
 `abc12/xyz34:/path` — `abc12` is the parent project GUID, `xyz34` is the
 component (child node) GUID. The path is resolved under `xyz34`.
+
+## Sync manifest (gosf.toml)
+
+### Schema
+
+```toml
+[project]
+id = "abc12"          # default project GUID for entries that omit project field
+
+[[files]]
+local     = "data/raw/counts.h5"    # path relative to repo root
+remote    = "/data/raw/counts.h5"   # path within OSF Storage
+direction = "pull"                  # REQUIRED: "push", "pull", or "both"
+version   = 3                       # pinned OSF version number; 0 = not yet pushed
+md5       = "d41d8cd98f00b204e9800998ecf8427e"  # MD5 of pinned version; "" if version=0
+project   = "xyz89"                 # optional per-entry override of [project].id
+```
+
+Validation on load:
+- `direction` must be present on every entry — missing = load error.
+- No duplicate `local` paths.
+- No duplicate `(project, remote)` pairs.
+- Every entry must resolve a project (own field or `[project].id`).
+
+### File states
+
+`ClassifyFile(entry, localMD5, remoteVersions, noCheckRemote)` in `internal/manifest/status.go`:
+
+| State              | Meaning |
+|--------------------|---------|
+| `IN_SYNC`          | Local MD5 matches declared version's MD5 |
+| `MISSING`          | Local file does not exist |
+| `BEHIND`           | Local MD5 matches an older remote version (safe to pull) |
+| `AHEAD_OF_MANIFEST`| Local MD5 doesn't match any remote version (locally modified or unpushed) |
+| `REMOTE_NEWER`     | In sync with manifest but remote has newer versions beyond the pin |
+| `NOT_PUSHED`       | version = 0 |
+
+When `--no-check-remote`: only IN_SYNC, MISSING, AHEAD_OF_MANIFEST, NOT_PUSHED are possible.
+
+### MD5 sourcing
+
+- **Local**: stream file through `crypto/md5` (never read fully into memory).
+- **Remote**: `data.attributes.extra.hashes.md5` from the versions list API response, and from Waterbutler upload response (`UploadResult.MD5`).
+- Compare local MD5 against **all** remote version MD5s (not just declared version) to distinguish BEHIND from AHEAD_OF_MANIFEST.
+
+### `internal/manifest/` package
+
+- `manifest.go`: `Load`, `Save` (atomic temp+rename), `FindManifest` (walks up from cwd), `Entry.ResolveProject`.
+- `status.go`: `FileState`, `RemoteVersion`, `ClassifyFile`.
+- `IsNotFound(err)` checks for `NotFoundError` from `FindManifest`.
+
+### `internal/client/` changes
+
+- `FileVersionAttributes` now includes `Extra.Hashes.MD5` from `attributes.extra.hashes.md5`.
+- `WaterbutlerClient.Upload` returns `(UploadResult, error)` — `UploadResult` carries `Version int` and `MD5 string` from the Waterbutler response.
+
+### `gosf add` (`cmd/add.go`)
+
+```
+gosf add <local-path> <project>:<remote-path> [--direction=push|pull|both]
+```
+- Default direction: push.
+- Creates gosf.toml if absent.
+- Errors if local path already in manifest.
+- Fetches remote version+MD5 if file exists; writes version=0, md5="" otherwise.
+- Prints .gitignore tip for local files >50 MB.
+
+### `gosf status` (`cmd/status.go`)
+
+- Computes local MD5 for each entry.
+- Fetches remote versions unless `--no-check-remote`.
+- Tabular output: DIR / STATUS / LOCAL PATH / VER / DETAIL.
+- Exit code 0 if all IN_SYNC; exit code 1 otherwise (CI-friendly).
+- `--output=json` emits array of `{path, direction, state, declared_version, remote_latest_version}`.
+
+### `gosf sync` (`cmd/sync.go`)
+
+Default (no flags): push-eligible entries only (direction=push or both).
+
+| State              | Push action |
+|--------------------|-------------|
+| IN_SYNC            | Print ✓, skip |
+| AHEAD_OF_MANIFEST  | Push, update manifest |
+| NOT_PUSHED (exists)| Push, set manifest |
+| NOT_PUSHED (missing)| Print ·, skip |
+| MISSING            | Print ✗, skip |
+| BEHIND / REMOTE_NEWER | Push as new version, update manifest |
+
+`--pull-new`: additionally pulls pull-eligible (direction=pull or both) MISSING and BEHIND entries.
+
+Flags: `--pull-new`, `--force` (overwrite AHEAD_OF_MANIFEST on pull), `--dry-run`, `--no-check-remote`.
+
+### `gosf push` manifest integration
+
+- If gosf.toml exists and the pushed path has `direction=pull` → refuse push before any network call.
+- After a successful push, if the entry has `direction=push` or `both` and `UploadResult.Version > 0` → update manifest atomically.
+
+### Exit code handling
+
+`exitCodeError` in `cmd/status.go` carries a numeric exit code without printing an error message.
+`Execute()` in `cmd/root.go` handles it: `errors.As(err, &exitErr)` → `os.Exit(exitErr.code)`.
+All other errors are printed to stderr and exit 1. `rootCmd.SilenceErrors = true` prevents Cobra's double-printing.
 
 ## Development notes
 

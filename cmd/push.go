@@ -11,6 +11,7 @@ import (
 
 	"github.com/BU-Neuromics/gosf/internal/client"
 	"github.com/BU-Neuromics/gosf/internal/config"
+	"github.com/BU-Neuromics/gosf/internal/manifest"
 	"github.com/BU-Neuromics/gosf/internal/output"
 	"github.com/BU-Neuromics/gosf/internal/resolver"
 )
@@ -65,16 +66,28 @@ Examples:
 			return fmt.Errorf("source: %w", err)
 		}
 
+		// Load gosf.toml if present (optional — push works without it).
+		var mf *manifest.Manifest
+		var mfPath string
+		if mfPathFound, _, findErr := manifest.FindManifest(); findErr == nil {
+			if loaded, loadErr := manifest.Load(mfPathFound); loadErr == nil {
+				mf = loaded
+				mfPath = mfPathFound
+			}
+		}
+
 		jsonMode := flagOutput == "json"
 		s := &pushSession{
-			ctx:      cmd.Context(),
-			res:      resolver.New(osfClient),
-			wb:       client.NewWaterbutler(token),
-			result:   output.NewPushResult(pushDryRun),
-			jsonMode: jsonMode,
-			quiet:    flagQuiet || jsonMode,
-			dryRun:   pushDryRun,
-			conflict: pushConflict,
+			ctx:          cmd.Context(),
+			res:          resolver.New(osfClient),
+			wb:           client.NewWaterbutler(token),
+			result:       output.NewPushResult(pushDryRun),
+			jsonMode:     jsonMode,
+			quiet:        flagQuiet || jsonMode,
+			dryRun:       pushDryRun,
+			conflict:     pushConflict,
+			manifest:     mf,
+			manifestPath: mfPath,
 		}
 
 		if srcInfo.IsDir() {
@@ -98,18 +111,31 @@ Examples:
 
 // pushSession carries the shared state for one push invocation.
 type pushSession struct {
-	ctx      context.Context
-	res      *resolver.Resolver
-	wb       *client.WaterbutlerClient
-	result   *output.PushResult
-	jsonMode bool
-	quiet    bool
-	dryRun   bool
-	conflict string
+	ctx          context.Context
+	res          *resolver.Resolver
+	wb           *client.WaterbutlerClient
+	result       *output.PushResult
+	jsonMode     bool
+	quiet        bool
+	dryRun       bool
+	conflict     string
+	manifest     *manifest.Manifest // nil if no gosf.toml found
+	manifestPath string             // path to gosf.toml
 }
 
 // file uploads a single local file to an OSF destination path.
 func (s *pushSession) file(srcPath, nodeID, destPath string) error {
+	// Enforce manifest direction before doing any network work.
+	if s.manifest != nil {
+		if idx := findEntryByLocal(s.manifest, srcPath); idx >= 0 {
+			entry := s.manifest.Files[idx]
+			if entry.Direction == "pull" {
+				return fmt.Errorf("push refused: %q has direction=pull in gosf.toml.\n"+
+					"Edit gosf.toml to change direction to push or both first.", srcPath)
+			}
+		}
+	}
+
 	parentDir, filename := deriveUploadTarget(destPath, srcPath)
 
 	existing, err := s.res.ListDir(s.ctx, nodeID, parentDir)
@@ -153,10 +179,29 @@ func (s *pushSession) file(srcPath, nodeID, destPath string) error {
 			fmt.Fprintf(os.Stderr, "%s %s → %s\n", plan.action, srcPath, destFull)
 		}
 	}
-	if err := s.wb.Upload(s.ctx, srcPath, plan.url, s.quiet); err != nil {
+	uploadResult, err := s.wb.Upload(s.ctx, srcPath, plan.url, s.quiet)
+	if err != nil {
 		return err
 	}
 	s.result.Add(destFull, plan.action)
+
+	// Update gosf.toml if this file has a manifest entry with direction push or both.
+	if s.manifest != nil && !s.dryRun && uploadResult.Version > 0 {
+		if idx := findEntryByLocal(s.manifest, srcPath); idx >= 0 {
+			entry := &s.manifest.Files[idx]
+			if entry.Direction == "push" || entry.Direction == "both" {
+				oldVer := entry.Version
+				entry.Version = uploadResult.Version
+				entry.MD5 = uploadResult.MD5
+				if err := manifest.Save(s.manifest, s.manifestPath); err != nil {
+					return fmt.Errorf("updating gosf.toml: %w", err)
+				}
+				if !s.quiet {
+					fmt.Fprintf(os.Stderr, "Updated gosf.toml: %s  v%d → v%d\n", srcPath, oldVer, entry.Version)
+				}
+			}
+		}
+	}
 	return nil
 }
 
