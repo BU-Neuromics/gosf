@@ -153,6 +153,44 @@ func parseAPIError(statusCode int, body []byte) *APIError {
 
 // --- public API ---
 
+// GetFileItem returns metadata for a single file by its OSF file ID.
+func (c *OSFClient) GetFileItem(ctx context.Context, fileID string) (*FileItem, error) {
+	var result struct {
+		Data FileItem `json:"data"`
+	}
+	url := fmt.Sprintf("%s/files/%s/", metaBase, fileID)
+	if err := c.getJSON(ctx, url, &result); err != nil {
+		return nil, err
+	}
+	return &result.Data, nil
+}
+
+// GetUserNodes returns all nodes (projects and components) the authenticated
+// user has access to. Requires auth.
+func (c *OSFClient) GetUserNodes(ctx context.Context) ([]Node, error) {
+	return c.listNodesFromURL(ctx, metaBase+"/users/me/nodes/")
+}
+
+type nodesPage struct {
+	Data  []Node `json:"data"`
+	Links struct {
+		Next string `json:"next"`
+	} `json:"links"`
+}
+
+func (c *OSFClient) listNodesFromURL(ctx context.Context, url string) ([]Node, error) {
+	var all []Node
+	for url != "" {
+		var page nodesPage
+		if err := c.getJSON(ctx, url, &page); err != nil {
+			return nil, err
+		}
+		all = append(all, page.Data...)
+		url = page.Links.Next
+	}
+	return all, nil
+}
+
 // GetCurrentUser returns the authenticated user's profile.
 // Returns APIError with StatusCode 401 if the token is invalid.
 func (c *OSFClient) GetCurrentUser(ctx context.Context) (*User, error) {
