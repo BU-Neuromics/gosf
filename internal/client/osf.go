@@ -13,15 +13,17 @@ const metaBase = "https://api.osf.io/v2"
 
 // OSFClient is an HTTP client for the OSF JSON:API metadata endpoints.
 type OSFClient struct {
-	token string
-	http  *http.Client
+	token   string
+	http    *http.Client
+	baseURL string
 }
 
 // New returns an OSFClient. Pass an empty token for unauthenticated (public) access.
 func New(token string) *OSFClient {
 	return &OSFClient{
-		token: token,
-		http:  &http.Client{Timeout: 30 * time.Second},
+		token:   token,
+		http:    &http.Client{Timeout: 30 * time.Second},
+		baseURL: metaBase,
 	}
 }
 
@@ -158,7 +160,7 @@ func (c *OSFClient) GetFileItem(ctx context.Context, fileID string) (*FileItem, 
 	var result struct {
 		Data FileItem `json:"data"`
 	}
-	url := fmt.Sprintf("%s/files/%s/", metaBase, fileID)
+	url := fmt.Sprintf("%s/files/%s/", c.baseURL, fileID)
 	if err := c.getJSON(ctx, url, &result); err != nil {
 		return nil, err
 	}
@@ -168,7 +170,7 @@ func (c *OSFClient) GetFileItem(ctx context.Context, fileID string) (*FileItem, 
 // GetUserNodes returns all nodes (projects and components) the authenticated
 // user has access to. Requires auth.
 func (c *OSFClient) GetUserNodes(ctx context.Context) ([]Node, error) {
-	return c.listNodesFromURL(ctx, metaBase+"/users/me/nodes/")
+	return c.listNodesFromURL(ctx, c.baseURL+"/users/me/nodes/")
 }
 
 type nodesPage struct {
@@ -197,7 +199,7 @@ func (c *OSFClient) GetCurrentUser(ctx context.Context) (*User, error) {
 	var result struct {
 		Data User `json:"data"`
 	}
-	if err := c.getJSON(ctx, metaBase+"/users/me/", &result); err != nil {
+	if err := c.getJSON(ctx, c.baseURL+"/users/me/", &result); err != nil {
 		return nil, err
 	}
 	return &result.Data, nil
@@ -208,7 +210,7 @@ func (c *OSFClient) GetNode(ctx context.Context, nodeID string) (*Node, error) {
 	var result struct {
 		Data Node `json:"data"`
 	}
-	url := fmt.Sprintf("%s/nodes/%s/", metaBase, nodeID)
+	url := fmt.Sprintf("%s/nodes/%s/", c.baseURL, nodeID)
 	if err := c.getJSON(ctx, url, &result); err != nil {
 		return nil, err
 	}
@@ -218,7 +220,7 @@ func (c *OSFClient) GetNode(ctx context.Context, nodeID string) (*Node, error) {
 // ListFiles returns all items (files and folders) at the root of a node's OSF Storage.
 // Pages are followed automatically.
 func (c *OSFClient) ListFiles(ctx context.Context, nodeID string) ([]FileItem, error) {
-	url := fmt.Sprintf("%s/nodes/%s/files/osfstorage/", metaBase, nodeID)
+	url := fmt.Sprintf("%s/nodes/%s/files/osfstorage/", c.baseURL, nodeID)
 	return c.listFilesFromURL(ctx, url)
 }
 

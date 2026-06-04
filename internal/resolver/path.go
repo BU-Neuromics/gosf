@@ -57,13 +57,20 @@ func ParseTarget(s string) (Target, error) {
 	return t, nil
 }
 
-// Resolver resolves OSF path strings to file listings using the metadata client.
-type Resolver struct {
-	client *client.OSFClient
+// FileLister is the subset of the OSF metadata client that the resolver needs.
+// *client.OSFClient satisfies this interface; tests supply a fake.
+type FileLister interface {
+	ListFiles(ctx context.Context, nodeID string) ([]client.FileItem, error)
+	ListFilesFromURL(ctx context.Context, url string) ([]client.FileItem, error)
 }
 
-// New creates a Resolver backed by the given OSF metadata client.
-func New(c *client.OSFClient) *Resolver {
+// Resolver resolves OSF path strings to file listings using the metadata client.
+type Resolver struct {
+	client FileLister
+}
+
+// New creates a Resolver backed by the given file lister.
+func New(c FileLister) *Resolver {
 	return &Resolver{client: c}
 }
 
