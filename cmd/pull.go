@@ -48,7 +48,7 @@ Examples:
 		wbClient := client.NewWaterbutler(token)
 		res := resolver.New(osfClient)
 
-		items, err := res.ListDir(context.Background(), target.NodeID, target.Path)
+		items, err := res.ListDir(cmd.Context(), target.NodeID, target.Path)
 		if err != nil {
 			return err
 		}
@@ -63,11 +63,11 @@ Examples:
 			} else if dest == "." {
 				destPath = item.Attributes.Name
 			}
-			return pullFile(context.Background(), wbClient, item, destPath)
+			return pullFile(cmd.Context(), wbClient, item, destPath)
 		}
 
 		// Directory / multi-file: download tree into dest.
-		return pullTree(context.Background(), osfClient, wbClient, res, items, target.NodeID, dest)
+		return pullTree(cmd.Context(), osfClient, wbClient, res, items, target.NodeID, dest)
 	},
 }
 

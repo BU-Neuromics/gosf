@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"context"
 	"fmt"
 	"os"
 	"strings"
@@ -26,7 +25,7 @@ var infoCmd = &cobra.Command{
 		}
 
 		c := client.New(config.LoadToken(flagToken))
-		node, err := c.GetNode(context.Background(), target.NodeID)
+		node, err := c.GetNode(cmd.Context(), target.NodeID)
 		if err != nil {
 			if apiErr, ok := err.(*client.APIError); ok {
 				switch apiErr.StatusCode {

@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 )
 
 // newTestClient returns an OSFClient pointed at the given test server.
@@ -186,6 +187,34 @@ func TestGetCurrentUser(t *testing.T) {
 	}
 	if user.ID != "u1" || user.Attributes.FullName != "Ada Lovelace" {
 		t.Errorf("unexpected user: %+v", user)
+	}
+}
+
+func TestGetNode_RespectsContextCancellation(t *testing.T) {
+	// Server blocks until the request context is cancelled.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-r.Context().Done()
+	}))
+	defer srv.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	c := newTestClient("tok", srv.URL)
+
+	errc := make(chan error, 1)
+	go func() {
+		_, err := c.GetNode(ctx, "abc12")
+		errc <- err
+	}()
+
+	cancel() // simulate Ctrl-C
+
+	select {
+	case err := <-errc:
+		if err == nil {
+			t.Fatal("expected error after context cancellation, got nil")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("GetNode did not return promptly after cancellation")
 	}
 }
 

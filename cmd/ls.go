@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"context"
 	"fmt"
 	"os"
 
@@ -34,7 +33,7 @@ Examples:
 		c := client.New(token)
 		res := resolver.New(c)
 
-		items, err := res.ListDir(context.Background(), target.NodeID, target.Path)
+		items, err := res.ListDir(cmd.Context(), target.NodeID, target.Path)
 		if err != nil {
 			return err
 		}

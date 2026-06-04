@@ -66,9 +66,9 @@ Examples:
 		}
 
 		if srcInfo.IsDir() {
-			return pushDir(context.Background(), osfClient, wbClient, src, target.NodeID, target.Path)
+			return pushDir(cmd.Context(), osfClient, wbClient, src, target.NodeID, target.Path)
 		}
-		return pushFile(context.Background(), osfClient, wbClient, src, target.NodeID, target.Path)
+		return pushFile(cmd.Context(), osfClient, wbClient, src, target.NodeID, target.Path)
 	},
 }
 

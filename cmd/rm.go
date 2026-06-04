@@ -2,7 +2,6 @@ package cmd
 
 import (
 	"bufio"
-	"context"
 	"fmt"
 	"os"
 	"strings"
@@ -51,7 +50,7 @@ Examples:
 		res := resolver.New(osfClient)
 
 		// Resolve the path to the exact item (file or folder) and its links.
-		item, err := res.Resolve(context.Background(), target.NodeID, target.Path)
+		item, err := res.Resolve(cmd.Context(), target.NodeID, target.Path)
 		if err != nil {
 			return err
 		}
@@ -78,7 +77,7 @@ Examples:
 		}
 
 		wb := client.NewWaterbutler(token)
-		if err := wb.Delete(context.Background(), item.Links.Delete); err != nil {
+		if err := wb.Delete(cmd.Context(), item.Links.Delete); err != nil {
 			return fmt.Errorf("deleting %s: %w", target.Path, err)
 		}
 
