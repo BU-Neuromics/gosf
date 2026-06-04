@@ -2,18 +2,73 @@ package cmd
 
 import (
 	"fmt"
+	"os"
+	"os/exec"
+	"runtime"
+	"strings"
 
 	"github.com/spf13/cobra"
+
+	"github.com/BU-Neuromics/gosf/internal/resolver"
 )
 
 var openCmd = &cobra.Command{
-	Use:          "open <project>[:<path>]",
-	Short:        "Open an OSF project or file in the browser",
+	Use:   "open <project>[:<path>]",
+	Short: "Open an OSF project or file in the browser",
+	Long: `Constructs the osf.io URL for the given project or path and opens it in
+the default browser. On headless systems, prints the URL instead.
+
+Examples:
+  gosf open abc12                  # opens https://osf.io/abc12/
+  gosf open abc12:/data            # opens the /data folder in the OSF web UI
+  gosf open abc12:/data/file.csv   # opens the file in the OSF web UI`,
 	Args:         cobra.ExactArgs(1),
 	SilenceUsage: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return fmt.Errorf("open: not yet implemented")
+		target, err := resolver.ParseTarget(args[0])
+		if err != nil {
+			return err
+		}
+
+		osfURL := buildOSFWebURL(target)
+
+		if err := openBrowser(osfURL); err != nil {
+			// On headless systems the open command may fail — just print the URL.
+			fmt.Fprintln(os.Stdout, osfURL)
+			return nil
+		}
+
+		if !flagQuiet {
+			fmt.Fprintln(os.Stderr, osfURL)
+		}
+		return nil
 	},
+}
+
+func buildOSFWebURL(t resolver.Target) string {
+	if t.Path == "/" || t.Path == "" {
+		return fmt.Sprintf("https://osf.io/%s/", t.NodeID)
+	}
+	// Strip leading slash; OSF web URLs use /files/osfstorage/<path>
+	path := strings.TrimPrefix(t.Path, "/")
+	return fmt.Sprintf("https://osf.io/%s/files/osfstorage/%s", t.NodeID, path)
+}
+
+func openBrowser(url string) error {
+	var cmd *exec.Cmd
+	switch runtime.GOOS {
+	case "linux":
+		cmd = exec.Command("xdg-open", url)
+	case "darwin":
+		cmd = exec.Command("open", url)
+	case "windows":
+		cmd = exec.Command("cmd", "/c", "start", url)
+	default:
+		return fmt.Errorf("unsupported platform: %s", runtime.GOOS)
+	}
+	cmd.Stdout = nil
+	cmd.Stderr = nil
+	return cmd.Start()
 }
 
 func init() {
