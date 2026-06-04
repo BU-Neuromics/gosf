@@ -73,6 +73,38 @@ func TestPushResultJSON(t *testing.T) {
 	}
 }
 
+func TestVersionsResultJSON(t *testing.T) {
+	r := NewVersionsResult()
+	r.Versions = append(r.Versions, VersionItem{
+		Version:     3,
+		DateCreated: "2024-03-01T00:00:00",
+		Size:        300,
+		Contributor: "ada@example.com",
+	})
+	m := roundTrip(t, r)
+	versions, ok := m["versions"].([]any)
+	if !ok || len(versions) != 1 {
+		t.Fatalf("versions = %v", m["versions"])
+	}
+	first := versions[0].(map[string]any)
+	if first["version"].(float64) != 3 {
+		t.Errorf("version = %v, want 3", first["version"])
+	}
+	if first["contributor"] != "ada@example.com" {
+		t.Errorf("contributor = %v", first["contributor"])
+	}
+}
+
+func TestVersionsResultEmptyIsArray(t *testing.T) {
+	var buf bytes.Buffer
+	if err := PrintJSON(&buf, NewVersionsResult()); err != nil {
+		t.Fatalf("PrintJSON: %v", err)
+	}
+	if got := buf.String(); !bytes.Contains([]byte(got), []byte(`"versions": []`)) {
+		t.Errorf("empty versions should serialise as [], got: %s", got)
+	}
+}
+
 // TestEmptyTransferSlicesAreArraysNotNull guards scripting consumers: an empty
 // result must serialise as [] rather than null.
 func TestEmptyTransferSlicesAreArraysNotNull(t *testing.T) {

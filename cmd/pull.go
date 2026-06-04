@@ -15,6 +15,7 @@ import (
 )
 
 var pullDryRun bool
+var pullVersion int
 
 var pullCmd = &cobra.Command{
 	Use:   "pull <project>[:<path>] [dest]",
@@ -53,6 +54,20 @@ Examples:
 			return err
 		}
 
+		// Validate --version before doing any transfer work.
+		if pullVersion > 0 {
+			if len(items) != 1 || items[0].Attributes.Kind != "file" {
+				return fmt.Errorf("--version requires a single file target, not a directory")
+			}
+			versions, err := osfClient.GetFileVersions(cmd.Context(), items[0].ID)
+			if err != nil {
+				return fmt.Errorf("fetching versions: %w", err)
+			}
+			if err := validateVersion(versions, pullVersion); err != nil {
+				return err
+			}
+		}
+
 		jsonMode := flagOutput == "json"
 		s := &pullSession{
 			ctx:      cmd.Context(),
@@ -62,6 +77,7 @@ Examples:
 			jsonMode: jsonMode,
 			quiet:    flagQuiet || jsonMode, // don't interleave progress bars with JSON
 			dryRun:   pullDryRun,
+			version:  pullVersion,
 		}
 
 		// Single file?
@@ -101,6 +117,7 @@ type pullSession struct {
 	jsonMode bool
 	quiet    bool
 	dryRun   bool
+	version  int // 0 = latest; >0 = specific version number
 }
 
 // file downloads a single file item to destPath, recording it in the result.
@@ -119,7 +136,11 @@ func (s *pullSession) file(item client.FileItem, destPath string) error {
 	if err := os.MkdirAll(filepath.Dir(destPath), 0755); err != nil {
 		return fmt.Errorf("creating destination directory: %w", err)
 	}
-	if err := s.wb.Download(s.ctx, item.Links.Download, destPath, item.Attributes.Size, s.quiet); err != nil {
+	dlURL := item.Links.Download
+	if s.version > 0 {
+		dlURL = client.RevisionURL(dlURL, s.version)
+	}
+	if err := s.wb.Download(s.ctx, dlURL, destPath, item.Attributes.Size, s.quiet); err != nil {
 		return err
 	}
 	s.result.Add(destPath, item.Attributes.Size)
@@ -149,7 +170,21 @@ func (s *pullSession) tree(items []client.FileItem, destDir string) error {
 	return nil
 }
 
+// validateVersion checks that version n exists in the list returned by GetFileVersions.
+func validateVersion(versions []client.FileVersion, n int) error {
+	for _, v := range versions {
+		if v.Attributes.Version == n {
+			return nil
+		}
+	}
+	if len(versions) == 0 {
+		return fmt.Errorf("no versions found for this file")
+	}
+	return fmt.Errorf("version %d not found; run 'gosf versions <path>' to see available versions", n)
+}
+
 func init() {
 	pullCmd.Flags().BoolVar(&pullDryRun, "dry-run", false, "Show what would be downloaded without downloading")
+	pullCmd.Flags().IntVar(&pullVersion, "version", 0, "Download a specific version number (0 = latest)")
 	rootCmd.AddCommand(pullCmd)
 }

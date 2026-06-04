@@ -202,6 +202,19 @@ func BuildUploadURL(nodeID, parentPath, filename string) string {
 	return base + "?name=" + url.QueryEscape(filename) + "&kind=file"
 }
 
+// RevisionURL appends ?revision=N (or &revision=N) to a Waterbutler download URL
+// so that a specific historical version is fetched.
+func RevisionURL(downloadURL string, revision int) string {
+	u, err := url.Parse(downloadURL)
+	if err != nil {
+		return fmt.Sprintf("%s?revision=%d", downloadURL, revision)
+	}
+	q := u.Query()
+	q.Set("revision", fmt.Sprintf("%d", revision))
+	u.RawQuery = q.Encode()
+	return u.String()
+}
+
 func truncateName(s string, max int) string {
 	// Show only the last component for cleaner display
 	if idx := strings.LastIndexByte(s, '/'); idx >= 0 {

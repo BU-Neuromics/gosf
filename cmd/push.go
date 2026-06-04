@@ -147,7 +147,11 @@ func (s *pushSession) file(srcPath, nodeID, destPath string) error {
 	}
 
 	if !s.quiet {
-		fmt.Fprintf(os.Stderr, "%s %s → %s\n", plan.action, srcPath, destFull)
+		if plan.action == "overwrite" {
+			fmt.Fprintf(os.Stderr, "overwrite %s → %s (new version created)\n", srcPath, destFull)
+		} else {
+			fmt.Fprintf(os.Stderr, "%s %s → %s\n", plan.action, srcPath, destFull)
+		}
 	}
 	if err := s.wb.Upload(s.ctx, srcPath, plan.url, s.quiet); err != nil {
 		return err

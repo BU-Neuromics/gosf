@@ -12,16 +12,17 @@ distributed to researchers. CLI-only (no SDK/library scope).
 ## Command structure
 
 ```
-gosf ls   <project>[:<path>]
-gosf pull <project>[:<path>] [dest]
-gosf push <src> <project>:<path>
-gosf rm   <project>:<path>
+gosf ls       <project>[:<path>]
+gosf pull     <project>[:<path>] [dest]
+gosf push     <src> <project>:<path>
+gosf rm       <project>:<path>
+gosf versions <project>:<path>
 gosf projects
-gosf info <project>
+gosf info     <project>
 gosf auth login
 gosf auth status
 gosf auth logout
-gosf open <project>[:<path>]
+gosf open     <project>[:<path>]
 ```
 
 Path convention: `abc12:/data/results/file.csv`
@@ -50,14 +51,16 @@ Key endpoints:
 - `GET /nodes/{id}/files/osfstorage/` — list files at root
 - `GET /nodes/{id}/files/osfstorage/?path=/subdir/` — list files in subdir
 - `GET /files/{file_id}/` — file metadata (includes download link)
+- `GET /files/{file_id}/versions/?embed=user` — all versions, newest-first, with embedded user
 
 ### Tier 2 — Waterbutler (actual file bytes)
 
 Base: `https://files.osf.io`
 
 - Upload new file: `PUT https://files.osf.io/v1/resources/{node_id}/providers/osfstorage/?name={filename}`
-- Upload existing: PUT to the file's `upload` link from metadata API
+- Upload existing: PUT to the file's `upload` link from metadata API (creates a new version)
 - Download: follow the `download` link from file metadata response
+- Download specific version: append `?revision={n}` to the download URL (`client.RevisionURL`)
 
 Path resolution: walk Tier 1 tree to resolve a path string to a Waterbutler URL.
 This is the core complexity — isolated in `internal/resolver/path.go`.
@@ -69,9 +72,10 @@ gosf/
 ├── cmd/
 │   ├── root.go         # root command, global flags, version
 │   ├── ls.go
-│   ├── pull.go
+│   ├── pull.go         # --version=<n> flag for specific version download
 │   ├── push.go
 │   ├── rm.go
+│   ├── versions.go     # gosf versions <project>:<path>
 │   ├── projects.go
 │   ├── info.go
 │   ├── auth.go
@@ -116,6 +120,7 @@ JSON goes to stdout; progress bars are suppressed in JSON mode.
 | `pull` | `{"downloaded": [{"path","size"}], "dry_run": bool}` |
 | `push` | `{"uploaded": [{"path","action"}], "dry_run": bool}` where action ∈ upload\|overwrite\|rename\|skip |
 | `rm` | `{"node","path","kind","dry_run"}` — requires `--yes` (no interactive prompt in JSON mode) |
+| `versions` | `{"versions": [{"version","date_created","size","contributor"}]}` — `[]` when empty |
 
 ### Cancellation
 
@@ -352,6 +357,8 @@ Strip the `Authorization` header when following redirects to a different host.
 - `dest` defaults to `.` (current dir); `dest` for a single file defaults to `./filename`
 - Skip existing files by default (no overwrite flag needed for pull)
 - `--dry-run` lists what would be downloaded
+- `--version=<n>` downloads a specific historical version; validates version exists before transferring
+- `--version` is invalid for directory/tree targets (errors early)
 
 **`push`**
 - Split dest path into `parentDir` + `filename`; fail if parent doesn't exist in OSF
@@ -366,6 +373,30 @@ Strip the `Authorization` header when following redirects to a different host.
 - Resolve path → `FileLinks.Delete`
 - Print what will be deleted; require `--yes` or interactive confirmation unless `--dry-run`
 - `--dry-run` prints path without deleting
+
+**`versions`**
+- Requires a specific file path (not a folder or project root)
+- Folder target → error: "versions only applies to files"
+- Missing path → error: "versions requires a specific file path"
+- Resolves via `resolver.Resolve` to get the file's OSF ID, then calls `GetFileVersions`
+- Contributor resolution (best-effort): `email_primary` > `full_name` > user GUID
+- `--output=json` emits `{"versions": [{"version","date_created","size","contributor"}]}`
+
+### OSF file versioning
+
+Every PUT to an existing file's `links.upload` URL creates a new numbered version.
+Versions are immutable once created.
+
+`GetFileVersions(fileID)` calls `GET /v2/files/{id}/versions/?embed=user` and returns
+`[]FileVersion` sorted newest-first. Each `FileVersion` embeds the contributor's user
+object; `FileVersion.Contributor()` resolves to `email_primary` → `full_name` → GUID.
+
+`RevisionURL(downloadURL, n)` appends `?revision=n` to a Waterbutler download URL,
+fetching a specific historical version. Used by `pull --version=<n>`.
+
+Two distinct upload paths in `push`:
+- **New file**: PUT to `BuildUploadURL(nodeID, parentPath, filename)` → 201 Created
+- **Update (overwrite)**: PUT to `existing.Links.Upload` → 200 OK, creates new version
 
 ### Adding a new OSF API endpoint to `osf.go`
 
