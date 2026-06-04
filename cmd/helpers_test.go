@@ -40,6 +40,64 @@ func TestFindFreeName(t *testing.T) {
 	}
 }
 
+func TestPlanUpload(t *testing.T) {
+	existing := mkfile("data.csv")
+	existing.Links.Upload = "https://files.osf.io/upload/existing"
+	siblings := []client.FileItem{existing}
+
+	t.Run("new file", func(t *testing.T) {
+		p, err := planUpload("skip", nil, "abc12", "/data", "new.csv", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if p.action != "upload" || p.name != "new.csv" {
+			t.Errorf("got %+v", p)
+		}
+		if p.url != client.BuildUploadURL("abc12", "/data", "new.csv") {
+			t.Errorf("url = %q", p.url)
+		}
+	})
+
+	t.Run("skip existing", func(t *testing.T) {
+		p, err := planUpload("skip", &existing, "abc12", "/data", "data.csv", siblings)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if p.action != "skip" || p.url != "" {
+			t.Errorf("got %+v, want skip with empty url", p)
+		}
+	})
+
+	t.Run("overwrite existing", func(t *testing.T) {
+		p, err := planUpload("overwrite", &existing, "abc12", "/data", "data.csv", siblings)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if p.action != "overwrite" || p.url != existing.Links.Upload {
+			t.Errorf("got %+v, want overwrite using existing upload link", p)
+		}
+	})
+
+	t.Run("rename existing", func(t *testing.T) {
+		p, err := planUpload("rename", &existing, "abc12", "/data", "data.csv", siblings)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if p.action != "rename" || p.name != "data_1.csv" {
+			t.Errorf("got %+v, want rename to data_1.csv", p)
+		}
+		if p.url != client.BuildUploadURL("abc12", "/data", "data_1.csv") {
+			t.Errorf("url = %q", p.url)
+		}
+	})
+
+	t.Run("unknown conflict mode", func(t *testing.T) {
+		if _, err := planUpload("bogus", &existing, "abc12", "/data", "data.csv", siblings); err == nil {
+			t.Error("expected error for unknown conflict mode")
+		}
+	})
+}
+
 func TestDeriveUploadTarget(t *testing.T) {
 	cases := []struct {
 		dest       string

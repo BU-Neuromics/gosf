@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"context"
 	"fmt"
 	"os"
 	"strings"
@@ -46,7 +45,7 @@ On headless/HPC systems, use --no-keychain to write to the config file instead.`
 			fmt.Fprintln(os.Stderr, "Validating token…")
 		}
 		c := client.New(token)
-		user, err := c.GetCurrentUser(context.Background())
+		user, err := c.GetCurrentUser(cmd.Context())
 		if err != nil {
 			if apiErr, ok := err.(*client.APIError); ok && apiErr.StatusCode == 401 {
 				return fmt.Errorf("invalid token: authentication failed")
@@ -97,7 +96,7 @@ var authStatusCmd = &cobra.Command{
 		}
 
 		c := client.New(token)
-		user, err := c.GetCurrentUser(context.Background())
+		user, err := c.GetCurrentUser(cmd.Context())
 		if err != nil {
 			if apiErr, ok := err.(*client.APIError); ok && apiErr.StatusCode == 401 {
 				return fmt.Errorf("stored token is invalid; run 'gosf auth login' to re-authenticate")

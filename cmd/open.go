@@ -9,6 +9,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/BU-Neuromics/gosf/internal/output"
 	"github.com/BU-Neuromics/gosf/internal/resolver"
 )
 
@@ -31,6 +32,11 @@ Examples:
 		}
 
 		osfURL := buildOSFWebURL(target)
+
+		// In JSON mode, emit the URL for scripting and do not launch a browser.
+		if flagOutput == "json" {
+			return output.PrintJSON(os.Stdout, output.OpenResult{URL: osfURL})
+		}
 
 		if err := openBrowser(osfURL); err != nil {
 			// On headless systems the open command may fail — just print the URL.

@@ -1,8 +1,11 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
 	"os"
+	"os/signal"
+	"syscall"
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
@@ -38,8 +41,13 @@ var rootCmd = &cobra.Command{
 }
 
 // Execute runs the root command and exits with a non-zero code on error.
+// It installs a signal-aware context so that Ctrl-C (SIGINT) or SIGTERM
+// cancels in-flight HTTP requests and aborts long transfers cleanly.
 func Execute() {
-	if err := rootCmd.Execute(); err != nil {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	if err := rootCmd.ExecuteContext(ctx); err != nil {
 		os.Exit(1)
 	}
 }

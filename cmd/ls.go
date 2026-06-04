@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"context"
 	"fmt"
 	"os"
 
@@ -34,13 +33,23 @@ Examples:
 		c := client.New(token)
 		res := resolver.New(c)
 
-		items, err := res.ListDir(context.Background(), target.NodeID, target.Path)
+		items, err := res.ListDir(cmd.Context(), target.NodeID, target.Path)
 		if err != nil {
 			return err
 		}
 
 		if flagOutput == "json" {
+			if items == nil {
+				items = []client.FileItem{} // serialise as [] not null
+			}
 			return output.PrintJSON(os.Stdout, items)
+		}
+
+		if len(items) == 0 {
+			if !flagQuiet {
+				fmt.Fprintln(os.Stderr, "(empty)")
+			}
+			return nil
 		}
 
 		printFileTable(items)

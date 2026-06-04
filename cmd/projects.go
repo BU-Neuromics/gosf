@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"context"
 	"fmt"
 	"os"
 
@@ -26,7 +25,7 @@ Requires a valid token (set via 'gosf auth login', --token flag, or OSF_TOKEN).`
 		}
 
 		c := client.New(token)
-		nodes, err := c.GetUserNodes(context.Background())
+		nodes, err := c.GetUserNodes(cmd.Context())
 		if err != nil {
 			if apiErr, ok := err.(*client.APIError); ok && apiErr.StatusCode == 401 {
 				return fmt.Errorf("invalid token — run 'gosf auth login' to re-authenticate")

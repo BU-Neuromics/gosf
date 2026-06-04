@@ -11,11 +11,12 @@ import (
 
 	"github.com/BU-Neuromics/gosf/internal/client"
 	"github.com/BU-Neuromics/gosf/internal/config"
+	"github.com/BU-Neuromics/gosf/internal/output"
 	"github.com/BU-Neuromics/gosf/internal/resolver"
 )
 
 var (
-	pushDryRun  bool
+	pushDryRun   bool
 	pushConflict string
 )
 
@@ -58,38 +59,64 @@ Examples:
 		}
 
 		osfClient := client.New(token)
-		wbClient := client.NewWaterbutler(token)
 
 		srcInfo, err := os.Stat(src)
 		if err != nil {
 			return fmt.Errorf("source: %w", err)
 		}
 
-		if srcInfo.IsDir() {
-			return pushDir(context.Background(), osfClient, wbClient, src, target.NodeID, target.Path)
+		jsonMode := flagOutput == "json"
+		s := &pushSession{
+			ctx:      cmd.Context(),
+			res:      resolver.New(osfClient),
+			wb:       client.NewWaterbutler(token),
+			result:   output.NewPushResult(pushDryRun),
+			jsonMode: jsonMode,
+			quiet:    flagQuiet || jsonMode,
+			dryRun:   pushDryRun,
+			conflict: pushConflict,
 		}
-		return pushFile(context.Background(), osfClient, wbClient, src, target.NodeID, target.Path)
+
+		if srcInfo.IsDir() {
+			err = s.dir(src, target.NodeID, target.Path)
+		} else {
+			err = s.file(src, target.NodeID, target.Path)
+		}
+		if err != nil {
+			return err
+		}
+
+		if jsonMode {
+			return output.PrintJSON(os.Stdout, s.result)
+		}
+		if len(s.result.Uploaded) == 0 && !flagQuiet {
+			fmt.Fprintln(os.Stderr, "Nothing to upload (no files at source).")
+		}
+		return nil
 	},
 }
 
-// pushFile uploads a single local file to an exact OSF destination path.
-func pushFile(
-	ctx context.Context,
-	osfClient *client.OSFClient,
-	wb *client.WaterbutlerClient,
-	srcPath, nodeID, destPath string,
-) error {
-	// Split destination into parent dir and filename.
+// pushSession carries the shared state for one push invocation.
+type pushSession struct {
+	ctx      context.Context
+	res      *resolver.Resolver
+	wb       *client.WaterbutlerClient
+	result   *output.PushResult
+	jsonMode bool
+	quiet    bool
+	dryRun   bool
+	conflict string
+}
+
+// file uploads a single local file to an OSF destination path.
+func (s *pushSession) file(srcPath, nodeID, destPath string) error {
 	parentDir, filename := deriveUploadTarget(destPath, srcPath)
 
-	// List parent dir to detect conflicts.
-	res := resolver.New(osfClient)
-	existing, err := res.ListDir(ctx, nodeID, parentDir)
+	existing, err := s.res.ListDir(s.ctx, nodeID, parentDir)
 	if err != nil {
-		return fmt.Errorf("listing destination directory: %w", err)
+		return fmt.Errorf("destination folder %s is not accessible (does it exist?): %w", parentDir, err)
 	}
 
-	// Check for an existing file with the same name.
 	var existingItem *client.FileItem
 	for i := range existing {
 		if existing[i].Attributes.Name == filename && existing[i].Attributes.Kind == "file" {
@@ -98,29 +125,94 @@ func pushFile(
 		}
 	}
 
-	uploadURL, resolvedName, err := resolveUploadURL(ctx, osfClient, existingItem, nodeID, parentDir, filename, existing)
+	plan, err := planUpload(s.conflict, existingItem, nodeID, parentDir, filename, existing)
 	if err != nil {
 		return err
 	}
+	destFull := strings.TrimRight(parentDir, "/") + "/" + plan.name
 
-	if pushDryRun {
-		if existingItem != nil {
-			fmt.Printf("[dry-run] would overwrite /%s/%s\n", strings.TrimPrefix(parentDir, "/"), resolvedName)
-		} else {
-			fmt.Printf("[dry-run] would upload → /%s/%s\n", strings.TrimPrefix(parentDir, "/"), resolvedName)
+	switch {
+	case plan.action == "skip":
+		s.result.Add(destFull, "skip")
+		if !s.jsonMode && !s.quiet {
+			fmt.Fprintf(os.Stderr, "skip  %s (already exists)\n", destFull)
+		}
+		return nil
+	case s.dryRun:
+		s.result.Add(destFull, plan.action)
+		if !s.jsonMode {
+			fmt.Printf("[dry-run] would %s → %s\n", plan.action, destFull)
 		}
 		return nil
 	}
 
-	if !flagQuiet {
-		action := "uploading"
-		if existingItem != nil && pushConflict == "overwrite" {
-			action = "overwriting"
+	if !s.quiet {
+		fmt.Fprintf(os.Stderr, "%s %s → %s\n", plan.action, srcPath, destFull)
+	}
+	if err := s.wb.Upload(s.ctx, srcPath, plan.url, s.quiet); err != nil {
+		return err
+	}
+	s.result.Add(destFull, plan.action)
+	return nil
+}
+
+// dir walks a local directory and uploads all files under destPath,
+// preserving the relative directory structure.
+func (s *pushSession) dir(srcDir, nodeID, destPath string) error {
+	return filepath.WalkDir(srcDir, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
 		}
-		fmt.Fprintf(os.Stderr, "%s %s → %s/%s\n", action, srcPath, parentDir, resolvedName)
+		if d.IsDir() {
+			return nil
+		}
+		rel, err := filepath.Rel(srcDir, path)
+		if err != nil {
+			return err
+		}
+		osfDest := filepath.ToSlash(filepath.Join(destPath, rel))
+		return s.file(path, nodeID, osfDest)
+	})
+}
+
+// uploadPlan describes how a single file upload should be carried out.
+type uploadPlan struct {
+	url    string // Waterbutler URL to PUT to; empty when action is "skip"
+	name   string // final filename at the destination
+	action string // "upload", "overwrite", "rename", or "skip"
+}
+
+// planUpload decides how to handle a file given the conflict mode and whether
+// a file of the same name already exists at the destination. It is pure: all
+// inputs are explicit, so it is fully unit-testable.
+func planUpload(
+	conflict string,
+	existing *client.FileItem,
+	nodeID, parentDir, filename string,
+	siblings []client.FileItem,
+) (uploadPlan, error) {
+	if existing == nil {
+		return uploadPlan{
+			url:    client.BuildUploadURL(nodeID, parentDir, filename),
+			name:   filename,
+			action: "upload",
+		}, nil
 	}
 
-	return wb.Upload(ctx, srcPath, uploadURL, flagQuiet)
+	switch conflict {
+	case "skip":
+		return uploadPlan{name: filename, action: "skip"}, nil
+	case "overwrite":
+		return uploadPlan{url: existing.Links.Upload, name: filename, action: "overwrite"}, nil
+	case "rename":
+		name := findFreeName(filename, siblings)
+		return uploadPlan{
+			url:    client.BuildUploadURL(nodeID, parentDir, name),
+			name:   name,
+			action: "rename",
+		}, nil
+	}
+	return uploadPlan{}, fmt.Errorf("unknown conflict mode: %s", conflict)
 }
 
 // deriveUploadTarget splits an OSF destination path into the parent directory
@@ -156,40 +248,8 @@ func deriveUploadTarget(destPath, srcPath string) (parentDir, filename string) {
 // cleanParent normalises a parent directory path to start with "/" and have no
 // trailing slash (except the root itself, which stays "/").
 func cleanParent(p string) string {
-	p = "/" + strings.Trim(p, "/")
-	return p
+	return "/" + strings.Trim(p, "/")
 }
-
-// resolveUploadURL decides which Waterbutler URL to use based on conflict mode,
-// and returns (uploadURL, resolvedFilename, error).
-func resolveUploadURL(
-	ctx context.Context,
-	_ *client.OSFClient,
-	existingItem *client.FileItem,
-	nodeID, parentDir, filename string,
-	siblings []client.FileItem,
-) (string, string, error) {
-	if existingItem == nil {
-		// New file.
-		return client.BuildUploadURL(nodeID, parentDir, filename), filename, nil
-	}
-
-	switch pushConflict {
-	case "skip":
-		return "", filename, &skipError{name: filename}
-	case "overwrite":
-		return existingItem.Links.Upload, filename, nil
-	case "rename":
-		name := findFreeName(filename, siblings)
-		return client.BuildUploadURL(nodeID, parentDir, name), name, nil
-	}
-	return "", "", fmt.Errorf("unknown conflict mode: %s", pushConflict)
-}
-
-// skipError signals that a file was intentionally skipped.
-type skipError struct{ name string }
-
-func (e *skipError) Error() string { return fmt.Sprintf("skipped %s (already exists)", e.name) }
 
 // findFreeName appends _1, _2, … to base until no sibling has that name.
 func findFreeName(filename string, siblings []client.FileItem) string {
@@ -205,43 +265,6 @@ func findFreeName(filename string, siblings []client.FileItem) string {
 			return candidate
 		}
 	}
-}
-
-// pushDir walks a local directory and uploads all files under destPath.
-func pushDir(
-	ctx context.Context,
-	osfClient *client.OSFClient,
-	wb *client.WaterbutlerClient,
-	srcDir, nodeID, destPath string,
-) error {
-	return filepath.WalkDir(srcDir, func(path string, d os.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if d.IsDir() {
-			return nil
-		}
-
-		rel, err := filepath.Rel(srcDir, path)
-		if err != nil {
-			return err
-		}
-
-		osfDest := filepath.Join(destPath, rel)
-		// Use forward slashes for OSF paths.
-		osfDest = filepath.ToSlash(osfDest)
-
-		if pushErr := pushFile(ctx, osfClient, wb, path, nodeID, osfDest); pushErr != nil {
-			if _, ok := pushErr.(*skipError); ok {
-				if !flagQuiet {
-					fmt.Fprintf(os.Stderr, "skip  %s (already exists)\n", osfDest)
-				}
-				return nil
-			}
-			return pushErr
-		}
-		return nil
-	})
 }
 
 func init() {

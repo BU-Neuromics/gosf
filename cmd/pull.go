@@ -10,6 +10,7 @@ import (
 
 	"github.com/BU-Neuromics/gosf/internal/client"
 	"github.com/BU-Neuromics/gosf/internal/config"
+	"github.com/BU-Neuromics/gosf/internal/output"
 	"github.com/BU-Neuromics/gosf/internal/resolver"
 )
 
@@ -45,68 +46,103 @@ Examples:
 
 		token := config.LoadToken(flagToken)
 		osfClient := client.New(token)
-		wbClient := client.NewWaterbutler(token)
 		res := resolver.New(osfClient)
 
-		items, err := res.ListDir(context.Background(), target.NodeID, target.Path)
+		items, err := res.ListDir(cmd.Context(), target.NodeID, target.Path)
 		if err != nil {
 			return err
+		}
+
+		jsonMode := flagOutput == "json"
+		s := &pullSession{
+			ctx:      cmd.Context(),
+			osf:      osfClient,
+			wb:       client.NewWaterbutler(token),
+			result:   output.NewPullResult(pullDryRun),
+			jsonMode: jsonMode,
+			quiet:    flagQuiet || jsonMode, // don't interleave progress bars with JSON
+			dryRun:   pullDryRun,
 		}
 
 		// Single file?
 		if len(items) == 1 && items[0].Attributes.Kind == "file" {
 			item := items[0]
 			destPath := dest
-			// If dest looks like a directory (exists or ends in /), use filename.
 			if info, err := os.Stat(dest); err == nil && info.IsDir() {
 				destPath = filepath.Join(dest, item.Attributes.Name)
 			} else if dest == "." {
 				destPath = item.Attributes.Name
 			}
-			return pullFile(context.Background(), wbClient, item, destPath)
+			if err := s.file(item, destPath); err != nil {
+				return err
+			}
+		} else {
+			if err := s.tree(items, dest); err != nil {
+				return err
+			}
 		}
 
-		// Directory / multi-file: download tree into dest.
-		return pullTree(context.Background(), osfClient, wbClient, res, items, target.NodeID, dest)
+		if jsonMode {
+			return output.PrintJSON(os.Stdout, s.result)
+		}
+		if len(s.result.Downloaded) == 0 && !flagQuiet {
+			fmt.Fprintln(os.Stderr, "Nothing to download (no files at that path).")
+		}
+		return nil
 	},
 }
 
-// pullFile downloads a single file item to destPath.
-func pullFile(ctx context.Context, wb *client.WaterbutlerClient, item client.FileItem, destPath string) error {
-	if pullDryRun {
-		fmt.Printf("[dry-run] would download → %s\n", destPath)
-		return nil
-	}
-	if err := os.MkdirAll(filepath.Dir(destPath), 0755); err != nil {
-		return err
-	}
-	return wb.Download(ctx, item.Links.Download, destPath, item.Attributes.Size, flagQuiet)
+// pullSession carries the shared state for one pull invocation.
+type pullSession struct {
+	ctx      context.Context
+	osf      *client.OSFClient
+	wb       *client.WaterbutlerClient
+	result   *output.PullResult
+	jsonMode bool
+	quiet    bool
+	dryRun   bool
 }
 
-// pullTree recursively downloads a slice of items into destDir.
-func pullTree(
-	ctx context.Context,
-	osfClient *client.OSFClient,
-	wb *client.WaterbutlerClient,
-	res *resolver.Resolver,
-	items []client.FileItem,
-	nodeID, destDir string,
-) error {
+// file downloads a single file item to destPath, recording it in the result.
+func (s *pullSession) file(item client.FileItem, destPath string) error {
+	if s.dryRun {
+		s.result.Add(destPath, item.Attributes.Size)
+		if !s.jsonMode {
+			fmt.Printf("[dry-run] would download → %s\n", destPath)
+		}
+		return nil
+	}
+
+	if item.Links.Download == "" {
+		return fmt.Errorf("no download URL for %q", item.Attributes.Name)
+	}
+	if err := os.MkdirAll(filepath.Dir(destPath), 0755); err != nil {
+		return fmt.Errorf("creating destination directory: %w", err)
+	}
+	if err := s.wb.Download(s.ctx, item.Links.Download, destPath, item.Attributes.Size, s.quiet); err != nil {
+		return err
+	}
+	s.result.Add(destPath, item.Attributes.Size)
+	return nil
+}
+
+// tree recursively downloads a slice of items into destDir.
+func (s *pullSession) tree(items []client.FileItem, destDir string) error {
 	for _, item := range items {
 		localPath := filepath.Join(destDir, item.Attributes.Name)
 
 		if item.Attributes.Kind == "folder" {
-			children, err := osfClient.ListFilesFromURL(ctx, item.Relationships.Files.Links.Related.Href)
+			children, err := s.osf.ListFilesFromURL(s.ctx, item.Relationships.Files.Links.Related.Href)
 			if err != nil {
 				return fmt.Errorf("listing %s: %w", item.Attributes.Name, err)
 			}
-			if err := pullTree(ctx, osfClient, wb, res, children, nodeID, localPath); err != nil {
+			if err := s.tree(children, localPath); err != nil {
 				return err
 			}
 			continue
 		}
 
-		if err := pullFile(ctx, wb, item, localPath); err != nil {
+		if err := s.file(item, localPath); err != nil {
 			return fmt.Errorf("downloading %s: %w", item.Attributes.Name, err)
 		}
 	}

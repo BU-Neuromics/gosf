@@ -2,7 +2,6 @@ package cmd
 
 import (
 	"bufio"
-	"context"
 	"fmt"
 	"os"
 	"strings"
@@ -11,6 +10,7 @@ import (
 
 	"github.com/BU-Neuromics/gosf/internal/client"
 	"github.com/BU-Neuromics/gosf/internal/config"
+	"github.com/BU-Neuromics/gosf/internal/output"
 	"github.com/BU-Neuromics/gosf/internal/resolver"
 )
 
@@ -47,11 +47,17 @@ Examples:
 			return fmt.Errorf("rm requires authentication — run 'gosf auth login' or set OSF_TOKEN")
 		}
 
+		// Fail fast: JSON mode has no interactive prompt, so --yes is mandatory
+		// for a real deletion. Check before doing any network work.
+		if flagOutput == "json" && !rmDryRun && !rmYes {
+			return fmt.Errorf("refusing to delete without --yes in --output=json mode")
+		}
+
 		osfClient := client.New(token)
 		res := resolver.New(osfClient)
 
 		// Resolve the path to the exact item (file or folder) and its links.
-		item, err := res.Resolve(context.Background(), target.NodeID, target.Path)
+		item, err := res.Resolve(cmd.Context(), target.NodeID, target.Path)
 		if err != nil {
 			return err
 		}
@@ -60,16 +66,29 @@ Examples:
 			return fmt.Errorf("item has no delete URL (may not support deletion via API)")
 		}
 
+		jsonMode := flagOutput == "json"
+
 		label := target.Path
 		if item.Attributes.Kind == "folder" {
 			label += " (and all contents)"
 		}
 
+		result := output.RemoveResult{
+			Node: target.NodeID,
+			Path: target.Path,
+			Kind: item.Attributes.Kind,
+		}
+
 		if rmDryRun {
+			result.DryRun = true
+			if jsonMode {
+				return output.PrintJSON(os.Stdout, result)
+			}
 			fmt.Fprintf(os.Stdout, "[dry-run] would delete %s from project %s\n", label, target.NodeID)
 			return nil
 		}
 
+		// JSON mode already required --yes above; here handle interactive text mode.
 		if !rmYes {
 			if !confirm(fmt.Sprintf("Delete %s from project %s?", label, target.NodeID)) {
 				fmt.Fprintln(os.Stdout, "Aborted.")
@@ -78,10 +97,13 @@ Examples:
 		}
 
 		wb := client.NewWaterbutler(token)
-		if err := wb.Delete(context.Background(), item.Links.Delete); err != nil {
+		if err := wb.Delete(cmd.Context(), item.Links.Delete); err != nil {
 			return fmt.Errorf("deleting %s: %w", target.Path, err)
 		}
 
+		if jsonMode {
+			return output.PrintJSON(os.Stdout, result)
+		}
 		if !flagQuiet {
 			fmt.Fprintf(os.Stdout, "Deleted %s\n", target.Path)
 		}
