@@ -31,14 +31,40 @@ $ gosf ls abc12:/data
 
 ## Installation
 
-### Pre-built binary (recommended)
+### Script (recommended)
+
+**Linux / macOS**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/BU-Neuromics/gosf/main/install.sh | bash
+```
+
+Detects your OS and architecture, downloads the right binary, verifies the
+SHA-256 checksum, and installs to `/usr/local/bin` (or `~/.local/bin` if
+`/usr/local/bin` is not writable). Override the destination with
+`GOSF_INSTALL_DIR`:
+
+```bash
+GOSF_INSTALL_DIR=~/.local/bin curl -fsSL https://raw.githubusercontent.com/BU-Neuromics/gosf/main/install.sh | bash
+```
+
+**Windows (PowerShell)**
+
+```powershell
+irm https://raw.githubusercontent.com/BU-Neuromics/gosf/main/install.ps1 | iex
+```
+
+Installs to `%LOCALAPPDATA%\Programs\gosf` and adds it to your user `PATH`.
+Override with `$env:GOSF_INSTALL_DIR`.
+
+### Pre-built binary (manual)
 
 Download the archive for your platform from the
-[releases page](https://github.com/BU-Neuromics/gosf/releases), extract it, and
-put `gosf` on your `PATH`:
+[releases page](https://github.com/BU-Neuromics/gosf/releases), verify the
+checksum against `checksums.txt`, extract, and put `gosf` on your `PATH`:
 
 ```console
-# Example: Linux x86_64
+# Linux x86_64 example
 tar -xzf gosf_*_linux_amd64.tar.gz
 sudo mv gosf /usr/local/bin/
 ```
