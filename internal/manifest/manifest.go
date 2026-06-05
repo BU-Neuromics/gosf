@@ -38,10 +38,12 @@ func (e Entry) ResolveProject(defaultID string) string {
 	return defaultID
 }
 
-// NotFoundError is returned by FindManifest when no gosf.toml is found.
+// NotFoundError is returned by FindManifest when no .gosf/gosf.toml is found.
 type NotFoundError struct{}
 
-func (NotFoundError) Error() string { return "gosf.toml not found in this directory or any parent" }
+func (NotFoundError) Error() string {
+	return ".gosf/gosf.toml not found in this directory or any parent"
+}
 
 // IsNotFound reports whether err is a NotFoundError.
 func IsNotFound(err error) bool {
@@ -68,6 +70,7 @@ func Load(path string) (*Manifest, error) {
 }
 
 // Save writes the manifest to path atomically (temp file + rename).
+// The parent directory is created if it does not exist.
 func Save(m *Manifest, path string) error {
 	data, err := toml.Marshal(m)
 	if err != nil {
@@ -75,6 +78,9 @@ func Save(m *Manifest, path string) error {
 	}
 
 	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return fmt.Errorf("creating manifest directory: %w", err)
+	}
 	tmp, err := os.CreateTemp(dir, ".gosf.toml.tmp.*")
 	if err != nil {
 		return fmt.Errorf("creating temp file: %w", err)
@@ -99,7 +105,7 @@ func Save(m *Manifest, path string) error {
 }
 
 // FindManifest walks up from the current working directory until it finds
-// gosf.toml. Returns (manifestPath, repoRoot, error).
+// .gosf/gosf.toml. Returns (manifestPath, repoRoot, error).
 // Returns NotFoundError if none is found.
 func FindManifest() (string, string, error) {
 	dir, err := os.Getwd()
@@ -108,7 +114,7 @@ func FindManifest() (string, string, error) {
 	}
 
 	for {
-		candidate := filepath.Join(dir, "gosf.toml")
+		candidate := filepath.Join(dir, ".gosf", "gosf.toml")
 		if _, err := os.Stat(candidate); err == nil {
 			return candidate, dir, nil
 		}
@@ -121,11 +127,16 @@ func FindManifest() (string, string, error) {
 	}
 }
 
-// Init creates or updates gosf.toml in dir with the given project ID.
+// Init creates or updates .gosf/gosf.toml in dir with the given project ID.
+// The .gosf/ subdirectory is created if it does not exist.
 // If the file exists, [project].id is updated and all [[files]] entries are preserved.
 // created reports whether a new file was created.
 func Init(dir, projectID string) (path string, created bool, err error) {
-	path = filepath.Join(dir, "gosf.toml")
+	gosfDir := filepath.Join(dir, ".gosf")
+	if mkErr := os.MkdirAll(gosfDir, 0755); mkErr != nil {
+		return "", false, fmt.Errorf("creating .gosf directory: %w", mkErr)
+	}
+	path = filepath.Join(gosfDir, "gosf.toml")
 
 	var m Manifest
 	if _, statErr := os.Stat(path); os.IsNotExist(statErr) {

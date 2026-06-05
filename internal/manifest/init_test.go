@@ -1,6 +1,8 @@
 package manifest_test
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/BU-Neuromics/gosf/internal/manifest"
@@ -15,6 +17,10 @@ func TestInit_CreatesManifest(t *testing.T) {
 	if !created {
 		t.Error("created should be true for new manifest")
 	}
+	want := filepath.Join(dir, ".gosf", "gosf.toml")
+	if path != want {
+		t.Errorf("path = %q, want %q", path, want)
+	}
 	m, err := manifest.Load(path)
 	if err != nil {
 		t.Fatalf("Load after Init: %v", err)
@@ -27,9 +33,21 @@ func TestInit_CreatesManifest(t *testing.T) {
 	}
 }
 
+func TestInit_CreatesGosfDir(t *testing.T) {
+	dir := t.TempDir()
+	_, _, err := manifest.Init(dir, "abc12")
+	if err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(dir, ".gosf")); os.IsNotExist(statErr) {
+		t.Error("Init should create .gosf/ directory")
+	}
+}
+
 func TestInit_UpdatesExistingManifest(t *testing.T) {
 	dir := t.TempDir()
-	writeFile(t, dir, "gosf.toml", validTOML)
+	os.MkdirAll(filepath.Join(dir, ".gosf"), 0755)
+	writeFile(t, filepath.Join(dir, ".gosf"), "gosf.toml", validTOML)
 
 	path, created, err := manifest.Init(dir, "xyz99")
 	if err != nil {
@@ -63,7 +81,8 @@ version   = 0
 md5       = ""
 project   = "xyz89"
 `
-	writeFile(t, dir, "gosf.toml", toml)
+	os.MkdirAll(filepath.Join(dir, ".gosf"), 0755)
+	writeFile(t, filepath.Join(dir, ".gosf"), "gosf.toml", toml)
 
 	_, _, err := manifest.Init(dir, "abc12")
 	if err != nil {
@@ -71,13 +90,14 @@ project   = "xyz89"
 	}
 }
 
-func TestInit_ReturnedPathIsInsideDir(t *testing.T) {
+func TestInit_ReturnedPathIsInsideGosfDir(t *testing.T) {
 	dir := t.TempDir()
 	path, _, err := manifest.Init(dir, "abc12")
 	if err != nil {
 		t.Fatalf("Init: %v", err)
 	}
-	if path == "" {
-		t.Error("returned path should not be empty")
+	want := filepath.Join(dir, ".gosf", "gosf.toml")
+	if path != want {
+		t.Errorf("path = %q, want %q", path, want)
 	}
 }

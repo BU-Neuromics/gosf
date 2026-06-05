@@ -29,10 +29,10 @@ var pushCmd = &cobra.Command{
 	Long: `Upload a local file or directory to an OSF project.
 
 With no arguments, pushes all tracked files with direction=push or direction=both
-from gosf.toml. Requires gosf.toml with [project].id set (run 'gosf init').
+from .gosf/gosf.toml. Requires .gosf/gosf.toml with [project].id set (run 'gosf init').
 
 With arguments, uploads the specified local file or directory and records it
-in gosf.toml (unless --no-track is set).
+in .gosf/gosf.toml (unless --no-track is set).
 
 Conflict behaviour (--conflict):
   skip      (default) Skip files that already exist at the destination.
@@ -84,7 +84,7 @@ Examples:
 			return fmt.Errorf("source: %w", err)
 		}
 
-		// Load existing gosf.toml; if absent and tracking enabled, prepare to create one.
+		// Load existing .gosf/gosf.toml; if absent and tracking enabled, prepare to create one.
 		var mf *manifest.Manifest
 		var mfPath string
 		mfPathFound, _, findErr := manifest.FindManifest()
@@ -94,7 +94,7 @@ Examples:
 				mfPath = mfPathFound
 			}
 		} else if manifest.IsNotFound(findErr) && !pushNoTrack {
-			mfPath = "gosf.toml"
+			mfPath = filepath.Join(".gosf", ".gosf/gosf.toml")
 			mf = &manifest.Manifest{Project: manifest.ProjectConfig{ID: target.NodeID}}
 		}
 
@@ -125,7 +125,7 @@ Examples:
 
 		if s.manifestDirty && !s.dryRun {
 			if err := manifest.Save(s.manifest, s.manifestPath); err != nil {
-				return fmt.Errorf("updating gosf.toml: %w", err)
+				return fmt.Errorf("updating .gosf/gosf.toml: %w", err)
 			}
 		}
 
@@ -143,7 +143,7 @@ Examples:
 func runBarePush(cmd *cobra.Command) error {
 	manifestPath, repoRoot, err := manifest.FindManifest()
 	if manifest.IsNotFound(err) {
-		return fmt.Errorf("no gosf.toml found — run: gosf init <project-id>")
+		return fmt.Errorf("no .gosf/gosf.toml found — run: gosf init <project-id>")
 	}
 	if err != nil {
 		return err
@@ -241,8 +241,8 @@ func (s *pushSession) file(srcPath, nodeID, destPath string) error {
 		if idx := findEntryByLocal(s.manifest, srcPath); idx >= 0 {
 			entry := s.manifest.Files[idx]
 			if entry.Direction == "pull" {
-				return fmt.Errorf("push refused: %q has direction=pull in gosf.toml; "+
-					"edit gosf.toml to change direction to push or both first", srcPath)
+				return fmt.Errorf("push refused: %q has direction=pull in .gosf/gosf.toml; "+
+					"edit .gosf/gosf.toml to change direction to push or both first", srcPath)
 			}
 		}
 	}
@@ -272,7 +272,7 @@ func (s *pushSession) file(srcPath, nodeID, destPath string) error {
 	if s.track && s.manifest != nil && plan.action != "skip" {
 		if idx := findEntryByRemote(s.manifest, nodeID, destFull); idx >= 0 {
 			if s.manifest.Files[idx].Local != srcPath {
-				return fmt.Errorf("push refused: %s:%s is already tracked to %q — edit gosf.toml to change",
+				return fmt.Errorf("push refused: %s:%s is already tracked to %q — edit .gosf/gosf.toml to change",
 					nodeID, destFull, s.manifest.Files[idx].Local)
 			}
 		}
@@ -451,7 +451,7 @@ func findFreeName(filename string, siblings []client.FileItem) string {
 func init() {
 	pushCmd.Flags().BoolVar(&pushDryRun, "dry-run", false, "Show what would be uploaded without uploading")
 	pushCmd.Flags().StringVar(&pushConflict, "conflict", "skip", "Conflict resolution: skip, overwrite, or rename")
-	pushCmd.Flags().BoolVar(&pushNoTrack, "no-track", false, "Upload without recording in gosf.toml")
+	pushCmd.Flags().BoolVar(&pushNoTrack, "no-track", false, "Upload without recording in .gosf/gosf.toml")
 	pushCmd.Flags().BoolVar(&pushNoCheckRemote, "no-check-remote", false, "Skip remote version lookups for bare push")
 	rootCmd.AddCommand(pushCmd)
 }

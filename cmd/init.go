@@ -12,10 +12,10 @@ import (
 
 var initCmd = &cobra.Command{
 	Use:   "init <project-id>",
-	Short: "Initialize gosf.toml with an OSF project ID",
-	Long: `Create or update gosf.toml in the current directory, setting [project].id.
+	Short: "Initialize .gosf/gosf.toml with an OSF project ID",
+	Long: `Create or update .gosf/gosf.toml in the current directory, setting [project].id.
 
-If gosf.toml already exists its [[files]] entries are preserved; only the
+If .gosf/gosf.toml already exists its [[files]] entries are preserved; only the
 project ID is updated.
 
 After running gosf init, bare 'gosf pull' and 'gosf push' will operate
