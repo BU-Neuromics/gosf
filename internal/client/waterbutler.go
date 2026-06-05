@@ -25,25 +25,30 @@ type WaterbutlerClient struct {
 // NewWaterbutler returns a WaterbutlerClient. Pass an empty token for
 // unauthenticated (public project) access.
 func NewWaterbutler(token string) *WaterbutlerClient {
-	return &WaterbutlerClient{
-		token: token,
-		// No timeout — callers stream large files.
-		http: &http.Client{
-			CheckRedirect: stripAuthOnCrossHost,
-		},
+	c := &WaterbutlerClient{token: token}
+	// No timeout — callers stream large files.
+	c.http = &http.Client{
+		CheckRedirect: c.redirectPolicy,
 	}
+	return c
 }
 
-// stripAuthOnCrossHost removes the Authorization header when a redirect
-// crosses to a different host (e.g. Waterbutler → S3).
-func stripAuthOnCrossHost(req *http.Request, via []*http.Request) error {
-	if len(via) > 0 && req.URL.Host != via[0].URL.Host {
+// redirectPolicy preserves the Authorization header when redirecting within
+// OSF infrastructure (osf.io and *.osf.io), and strips it when redirecting
+// to external backends such as S3 or GCS presigned URLs.
+func (c *WaterbutlerClient) redirectPolicy(req *http.Request, via []*http.Request) error {
+	if len(via) > 0 && !isOSFHost(req.URL.Host) {
 		req.Header.Del("Authorization")
 	}
 	if len(via) >= 10 {
 		return fmt.Errorf("too many redirects")
 	}
 	return nil
+}
+
+// isOSFHost reports whether host is OSF infrastructure (osf.io or any subdomain).
+func isOSFHost(host string) bool {
+	return host == "osf.io" || strings.HasSuffix(host, ".osf.io")
 }
 
 func (c *WaterbutlerClient) authHeader() string {
