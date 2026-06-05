@@ -1,0 +1,55 @@
+name: Bug report
+description: Something is not working as expected
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a bug. Please fill out the fields below.
+
+  - type: input
+    id: version
+    attributes:
+      label: gosf version
+      description: Output of `gosf --version`
+      placeholder: "gosf v1.0.0"
+    validations:
+      required: true
+
+  - type: input
+    id: platform
+    attributes:
+      label: OS / architecture
+      placeholder: "macOS 14 arm64 / Ubuntu 22.04 amd64 / Windows 11 amd64"
+    validations:
+      required: true
+
+  - type: textarea
+    id: command
+    attributes:
+      label: Command you ran
+      description: The exact `gosf` invocation (redact your token if present)
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behaviour
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behaviour
+      description: Include the full error output
+    validations:
+      required: true
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Anything else that might help (OSF project visibility, network setup, etc.)
