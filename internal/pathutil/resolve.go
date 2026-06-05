@@ -108,9 +108,5 @@ func MapFilePath(srcBase, destBase, filePath string) string {
 	}
 
 	result := path.Join(destBase, rel)
-	// path.Join cleans "./" prefixes; restore it when destBase was "./"
-	if strings.HasPrefix(destBase, "./") && !strings.HasPrefix(result, "/") {
-		// result is already relative; fine as-is
-	}
 	return result
 }

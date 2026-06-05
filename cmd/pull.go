@@ -17,7 +17,7 @@ import (
 )
 
 var (
-	pullDryRun bool
+	pullDryRun  bool
 	pullVersion int
 	pullNoTrack bool
 )

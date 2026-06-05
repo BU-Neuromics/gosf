@@ -40,10 +40,10 @@ func TestFileRemotePath(t *testing.T) {
 
 func TestFileLocalPath(t *testing.T) {
 	tests := []struct {
-		name       string
-		remoteSrc  string
-		localDest  string
-		want       string
+		name      string
+		remoteSrc string
+		localDest string
+		want      string
 	}{
 		// No dest / ".": strip leading slash to mirror remote path locally.
 		{"no dest", "/data/file.txt", "", "data/file.txt"},
@@ -68,12 +68,12 @@ func TestFileLocalPath(t *testing.T) {
 
 func TestPushDirBases(t *testing.T) {
 	tests := []struct {
-		name              string
-		localSrc          string
-		remoteDest        string
-		srcTrailingSlash  bool
-		wantLocalBase     string
-		wantRemoteBase    string
+		name             string
+		localSrc         string
+		remoteDest       string
+		srcTrailingSlash bool
+		wantLocalBase    string
+		wantRemoteBase   string
 	}{
 		// Trailing slash on src: copy CONTENTS; dir name is stripped.
 		{

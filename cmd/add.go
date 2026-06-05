@@ -41,7 +41,11 @@ Path rules follow scp conventions:
 		}
 
 		srcTrailingSlash := strings.HasSuffix(srcArg, "/") || strings.HasSuffix(srcArg, string(filepath.Separator))
-		localSrc := strings.TrimRight(srcArg, "/"+string(filepath.Separator))
+		cutset := "/"
+		if string(filepath.Separator) != "/" {
+			cutset += string(filepath.Separator)
+		}
+		localSrc := strings.TrimRight(srcArg, cutset)
 
 		srcInfo, statErr := os.Stat(localSrc)
 		srcIsDir := statErr == nil && srcInfo.IsDir()
@@ -56,10 +60,6 @@ Path rules follow scp conventions:
 				}
 				nodeID = target.NodeID
 				remoteDest = target.Path
-				if srcTrailingSlash || srcIsDir {
-					// Preserve trailing slash semantics: re-append to path
-					// so pathutil functions can see it via the srcTrailingSlash flag.
-				}
 				// Normalise: ParseTarget always returns path starting with /;
 				// if it ends with / (root or explicit dir) keep the slash for
 				// pathutil to honour.

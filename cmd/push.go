@@ -55,7 +55,11 @@ Examples:
 		}
 
 		src := args[0]
-		src = strings.TrimRight(src, "/"+string(filepath.Separator))
+		cutset := "/"
+		if string(filepath.Separator) != "/" {
+			cutset += string(filepath.Separator)
+		}
+		src = strings.TrimRight(src, cutset)
 
 		target, err := resolver.ParseTarget(args[1])
 		if err != nil {
