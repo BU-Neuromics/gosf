@@ -130,8 +130,8 @@ func (s *pushSession) file(srcPath, nodeID, destPath string) error {
 		if idx := findEntryByLocal(s.manifest, srcPath); idx >= 0 {
 			entry := s.manifest.Files[idx]
 			if entry.Direction == "pull" {
-				return fmt.Errorf("push refused: %q has direction=pull in gosf.toml.\n"+
-					"Edit gosf.toml to change direction to push or both first.", srcPath)
+				return fmt.Errorf("push refused: %q has direction=pull in gosf.toml; "+
+					"edit gosf.toml to change direction to push or both first", srcPath)
 			}
 		}
 	}

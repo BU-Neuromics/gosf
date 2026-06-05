@@ -1,0 +1,23 @@
+version: "2"
+
+linters:
+  exclusions:
+    rules:
+      # Errors from deferred Close/Flush are idiomatic to ignore in Go —
+      # the return path already carries a more relevant error.
+      - linters: [errcheck]
+        text: "Error return value of .*(Close|Flush).* is not checked"
+
+      # fmt writes to stdout/stderr are best-effort; the process cannot
+      # meaningfully recover if its own output pipe is broken.
+      - linters: [errcheck]
+        text: "Error return value of.*`fmt\\.F"
+
+      # os.Remove in error-recovery paths is cleanup-on-best-effort.
+      - linters: [errcheck]
+        text: "Error return value of `os\\.Remove"
+
+      # Test helpers: os.Chdir/MkdirAll failures surface as test failures;
+      # w.Write and similar low-stakes calls don't need wrapping in tests.
+      - path: "_test\\.go$"
+        linters: [errcheck]
