@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"time"
 )
 
@@ -19,11 +20,16 @@ type OSFClient struct {
 }
 
 // New returns an OSFClient. Pass an empty token for unauthenticated (public) access.
+// Set GOSF_API_BASE to override the default API base URL (useful in tests).
 func New(token string) *OSFClient {
+	base := os.Getenv("GOSF_API_BASE")
+	if base == "" {
+		base = metaBase
+	}
 	return &OSFClient{
 		token:   token,
 		http:    &http.Client{Timeout: 30 * time.Second},
-		baseURL: metaBase,
+		baseURL: base,
 	}
 }
 
