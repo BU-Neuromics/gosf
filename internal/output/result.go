@@ -58,6 +58,35 @@ func (r *PushResult) Add(path, action string) {
 	r.Uploaded = append(r.Uploaded, TransferItem{Path: path, Action: action})
 }
 
+// AddResult is emitted by `gosf add --output=json`.
+type AddResult struct {
+	Local           string `json:"local"`
+	Remote          string `json:"remote"`
+	Project         string `json:"project"`
+	Direction       string `json:"direction"`
+	Version         int    `json:"version"`
+	MD5             string `json:"md5"`
+	ManifestCreated bool   `json:"manifest_created"`
+}
+
+// StatusItem describes one manifest entry's state, emitted by `gosf status --output=json`.
+type StatusItem struct {
+	Path                string `json:"path"`
+	Direction           string `json:"direction"`
+	State               string `json:"state"`
+	DeclaredVersion     int    `json:"declared_version"`
+	RemoteLatestVersion int    `json:"remote_latest_version,omitempty"`
+}
+
+// SyncItem describes the action taken for one manifest entry, emitted by `gosf sync --output=json`.
+type SyncItem struct {
+	Path                string `json:"path"`
+	State               string `json:"state"`
+	DeclaredVersion     int    `json:"declared_version"`
+	RemoteLatestVersion int    `json:"remote_latest_version,omitempty"`
+	ActionTaken         string `json:"action_taken"`
+}
+
 // VersionItem describes one version in the versions list.
 type VersionItem struct {
 	Version     int    `json:"version"`

@@ -73,6 +73,48 @@ func TestPushResultJSON(t *testing.T) {
 	}
 }
 
+func TestAddResultJSON(t *testing.T) {
+	r := AddResult{
+		Local:     "data/counts.h5",
+		Remote:    "/data/counts.h5",
+		Project:   "abc12",
+		Direction: "pull",
+		Version:   3,
+		MD5:       "deadbeef",
+	}
+	m := roundTrip(t, r)
+	if m["local"] != "data/counts.h5" {
+		t.Errorf("local = %v", m["local"])
+	}
+	if m["direction"] != "pull" {
+		t.Errorf("direction = %v", m["direction"])
+	}
+	if m["version"].(float64) != 3 {
+		t.Errorf("version = %v", m["version"])
+	}
+	if m["md5"] != "deadbeef" {
+		t.Errorf("md5 = %v", m["md5"])
+	}
+}
+
+func TestAddResult_NotYetPushed(t *testing.T) {
+	r := AddResult{
+		Local: "data/new.h5", Remote: "/data/new.h5",
+		Project: "abc12", Direction: "push", Version: 0, MD5: "",
+		ManifestCreated: true,
+	}
+	m := roundTrip(t, r)
+	if m["version"].(float64) != 0 {
+		t.Errorf("version = %v, want 0", m["version"])
+	}
+	if m["md5"] != "" {
+		t.Errorf("md5 = %v, want empty", m["md5"])
+	}
+	if m["manifest_created"] != true {
+		t.Errorf("manifest_created = %v, want true", m["manifest_created"])
+	}
+}
+
 func TestVersionsResultJSON(t *testing.T) {
 	r := NewVersionsResult()
 	r.Versions = append(r.Versions, VersionItem{
@@ -102,6 +144,32 @@ func TestVersionsResultEmptyIsArray(t *testing.T) {
 	}
 	if got := buf.String(); !bytes.Contains([]byte(got), []byte(`"versions": []`)) {
 		t.Errorf("empty versions should serialise as [], got: %s", got)
+	}
+}
+
+// TestStatusAndSyncJSONNilGuards verifies that status and sync JSON output
+// serialises as [] (not null) when no entries are present.
+func TestStatusAndSyncJSONNilGuards(t *testing.T) {
+	// StatusItems
+	var items []StatusItem
+	items = make([]StatusItem, 0)
+	var buf bytes.Buffer
+	if err := PrintJSON(&buf, items); err != nil {
+		t.Fatalf("PrintJSON: %v", err)
+	}
+	if got := buf.String(); !bytes.Contains([]byte(got), []byte("[]")) {
+		t.Errorf("empty StatusItem slice should serialise as [], got: %s", got)
+	}
+
+	// SyncItems
+	buf.Reset()
+	var syncItems []SyncItem
+	syncItems = make([]SyncItem, 0)
+	if err := PrintJSON(&buf, syncItems); err != nil {
+		t.Fatalf("PrintJSON: %v", err)
+	}
+	if got := buf.String(); !bytes.Contains([]byte(got), []byte("[]")) {
+		t.Errorf("empty SyncItem slice should serialise as [], got: %s", got)
 	}
 }
 

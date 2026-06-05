@@ -9,6 +9,7 @@ import (
 	"github.com/BU-Neuromics/gosf/internal/client"
 	"github.com/BU-Neuromics/gosf/internal/config"
 	"github.com/BU-Neuromics/gosf/internal/manifest"
+	"github.com/BU-Neuromics/gosf/internal/output"
 	"github.com/BU-Neuromics/gosf/internal/resolver"
 )
 
@@ -40,13 +41,19 @@ Examples:
 			return fmt.Errorf("--direction must be push, pull, or both; got %q", addDirection)
 		}
 
+		jsonMode := flagOutput == "json"
+
 		// Find or create gosf.toml.
 		manifestPath, repoRoot, err := manifest.FindManifest()
 		var m *manifest.Manifest
+		manifestCreated := false
 		if manifest.IsNotFound(err) {
 			manifestPath = "gosf.toml"
 			m = &manifest.Manifest{}
-			fmt.Fprintln(os.Stdout, "Created gosf.toml. Set [project].id before running sync.")
+			manifestCreated = true
+			if !jsonMode {
+				fmt.Fprintln(os.Stdout, "Created gosf.toml. Set [project].id before running sync.")
+			}
 		} else if err != nil {
 			return err
 		} else {
@@ -54,7 +61,6 @@ Examples:
 			if err != nil {
 				return err
 			}
-			// Adjust localPath relative to repo root if we're in a subdirectory.
 			_ = repoRoot
 		}
 
@@ -71,7 +77,6 @@ Examples:
 			entryProject = proj
 		}
 		if defaultProj == "" {
-			// No default project yet — store it in the entry.
 			entryProject = proj
 		}
 
@@ -89,29 +94,41 @@ Examples:
 
 		existingItem, resolveErr := res.Resolve(cmd.Context(), proj, target.Path)
 		if resolveErr == nil {
-			// Remote file exists — fetch version info.
-			versions, err := c.GetFileVersions(cmd.Context(), existingItem.ID)
-			if err == nil && len(versions) > 0 {
+			versions, fetchErr := c.GetFileVersions(cmd.Context(), existingItem.ID)
+			if fetchErr == nil && len(versions) > 0 {
 				latest := versions[0] // newest-first
 				entry.Version = latest.Attributes.Version
 				entry.MD5 = latest.Attributes.Extra.Hashes.MD5
-				fmt.Fprintf(os.Stdout, "Added %s → %s:%s  (direction=%s, v%d)\n",
-					localPath, proj, target.Path, addDirection, entry.Version)
-			} else {
-				fmt.Fprintf(os.Stdout, "Added %s → %s:%s  (direction=%s, v%d)\n",
-					localPath, proj, target.Path, addDirection, 0)
 			}
-		} else {
-			// Remote does not exist.
-			entry.Version = 0
-			entry.MD5 = ""
-			fmt.Fprintf(os.Stdout, "Added %s → %s:%s  (direction=%s, not yet pushed)\n",
-				localPath, proj, target.Path, addDirection)
 		}
 
 		m.Files = append(m.Files, entry)
 
-		// Check local file size for .gitignore tip.
+		if jsonMode {
+			result := output.AddResult{
+				Local:           localPath,
+				Remote:          target.Path,
+				Project:         proj,
+				Direction:       addDirection,
+				Version:         entry.Version,
+				MD5:             entry.MD5,
+				ManifestCreated: manifestCreated,
+			}
+			if err := manifest.Save(m, manifestPath); err != nil {
+				return err
+			}
+			return output.PrintJSON(os.Stdout, result)
+		}
+
+		// Text output.
+		if entry.Version > 0 {
+			fmt.Fprintf(os.Stdout, "Added %s → %s:%s  (direction=%s, v%d)\n",
+				localPath, proj, target.Path, addDirection, entry.Version)
+		} else {
+			fmt.Fprintf(os.Stdout, "Added %s → %s:%s  (direction=%s, not yet pushed)\n",
+				localPath, proj, target.Path, addDirection)
+		}
+
 		if info, statErr := os.Stat(localPath); statErr == nil {
 			if info.Size() > 50*1024*1024 {
 				fmt.Fprintf(os.Stdout, "Tip: consider adding %s to .gitignore (large file, %s)\n",
