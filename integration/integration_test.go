@@ -178,6 +178,131 @@ func TestPull_DryRun(t *testing.T) {
 	}
 }
 
+func TestPull_AutoTracksFile(t *testing.T) {
+	env := newTestEnv(t)
+	env.srv.AddProject("abc12", "Test Project")
+	env.srv.AddFile("abc12", "/data/counts.h5", []byte("h5 content"))
+	env.writeFile("gosf.toml", "[project]\nid = \"abc12\"\n")
+
+	_, stderr, code := env.run("pull", "abc12:/data/counts.h5", "--quiet")
+	if code != 0 {
+		t.Fatalf("pull exit %d; stderr=%s", code, stderr)
+	}
+	if !env.fileExists("data/counts.h5") {
+		t.Fatal("file not downloaded")
+	}
+	toml := env.readFile("gosf.toml")
+	if !strings.Contains(toml, "/data/counts.h5") {
+		t.Errorf("expected manifest entry for /data/counts.h5:\n%s", toml)
+	}
+	if !strings.Contains(toml, "pull") {
+		t.Errorf("expected direction pull in manifest:\n%s", toml)
+	}
+}
+
+func TestPull_NoTrack(t *testing.T) {
+	env := newTestEnv(t)
+	env.srv.AddProject("abc12", "Test Project")
+	env.srv.AddFile("abc12", "/data/counts.h5", []byte("h5 content"))
+	env.writeFile("gosf.toml", "[project]\nid = \"abc12\"\n")
+
+	_, stderr, code := env.run("pull", "abc12:/data/counts.h5", "--no-track", "--quiet")
+	if code != 0 {
+		t.Fatalf("pull exit %d; stderr=%s", code, stderr)
+	}
+	if !env.fileExists("data/counts.h5") {
+		t.Fatal("file not downloaded")
+	}
+	toml := env.readFile("gosf.toml")
+	if strings.Contains(toml, "counts.h5") {
+		t.Errorf("--no-track: manifest should not contain counts.h5:\n%s", toml)
+	}
+}
+
+func TestPull_DuplicateRemoteConflict(t *testing.T) {
+	env := newTestEnv(t)
+	env.srv.AddProject("abc12", "Test Project")
+	env.srv.AddFile("abc12", "/data/counts.h5", []byte("data"))
+	env.writeFile("gosf.toml", `[project]
+id = "abc12"
+
+[[files]]
+local = "other/counts.h5"
+remote = "/data/counts.h5"
+direction = "pull"
+version = 0
+md5 = ""
+`)
+	// Pulling same remote path to a different local dest should error.
+	_, stderr, code := env.run("pull", "abc12:/data/counts.h5", "new_dest/", "--quiet")
+	if code == 0 {
+		t.Error("expected error when pulling tracked remote to different local path")
+	}
+	if !strings.Contains(stderr, "already tracked") {
+		t.Errorf("stderr should mention 'already tracked': %s", stderr)
+	}
+}
+
+func TestPull_BareFollowsManifest(t *testing.T) {
+	env := newTestEnv(t)
+	env.srv.AddProject("abc12", "Test Project")
+	f := env.srv.AddFile("abc12", "/data/counts.h5", []byte("counts data"))
+	env.writeFile("gosf.toml", fmt.Sprintf(`[project]
+id = "abc12"
+
+[[files]]
+local = "data/counts.h5"
+remote = "/data/counts.h5"
+direction = "pull"
+version = 1
+md5 = "%s"
+`, f.VersionMD5(1)))
+
+	_, stderr, code := env.run("pull", "--quiet")
+	if code != 0 {
+		t.Fatalf("bare pull exit %d; stderr=%s", code, stderr)
+	}
+	if !env.fileExists("data/counts.h5") {
+		t.Fatal("pull-eligible file not downloaded by bare pull")
+	}
+}
+
+func TestPull_BareNoProjectID(t *testing.T) {
+	env := newTestEnv(t)
+	// gosf.toml exists but has no [project].id and no entries.
+	env.writeFile("gosf.toml", "")
+
+	_, stderr, code := env.run("pull")
+	if code == 0 {
+		t.Error("expected error for bare pull with no project configured")
+	}
+	if !strings.Contains(stderr, "gosf init") {
+		t.Errorf("error should mention 'gosf init': %s", stderr)
+	}
+}
+
+func TestPull_BareSkipsPushEntries(t *testing.T) {
+	env := newTestEnv(t)
+	env.srv.AddProject("abc12", "Test Project")
+	env.writeFile("gosf.toml", `[project]
+id = "abc12"
+
+[[files]]
+local = "data/push_only.csv"
+remote = "/data/push_only.csv"
+direction = "push"
+version = 0
+md5 = ""
+`)
+	env.writeFile("data/push_only.csv", "data")
+
+	// Bare pull should not touch push-direction entries.
+	_, _, code := env.run("pull", "--quiet")
+	if code != 0 {
+		t.Fatalf("bare pull should succeed even with push-only entries")
+	}
+}
+
 // ---- Push ----
 
 func TestPush_NewFile(t *testing.T) {
@@ -262,6 +387,137 @@ func TestPush_JSON(t *testing.T) {
 	}
 	if item["action"] != "upload" {
 		t.Errorf("action = %v", item["action"])
+	}
+}
+
+func TestPush_AutoTracksFile(t *testing.T) {
+	env := newTestEnv(t)
+	env.srv.AddProject("abc12", "Test Project")
+	env.writeFile("gosf.toml", "[project]\nid = \"abc12\"\n")
+	env.writeFile("data.csv", "col1,col2\n1,2\n")
+
+	_, stderr, code := env.run("push", "data.csv", "abc12:/data.csv", "--quiet")
+	if code != 0 {
+		t.Fatalf("push exit %d; stderr=%s", code, stderr)
+	}
+	toml := env.readFile("gosf.toml")
+	if !strings.Contains(toml, "/data.csv") {
+		t.Errorf("expected /data.csv in gosf.toml:\n%s", toml)
+	}
+	if !strings.Contains(toml, "push") {
+		t.Errorf("expected direction push in gosf.toml:\n%s", toml)
+	}
+	if !strings.Contains(toml, "version = 1") {
+		t.Errorf("expected version = 1 in gosf.toml:\n%s", toml)
+	}
+}
+
+func TestPush_NoTrack(t *testing.T) {
+	env := newTestEnv(t)
+	env.srv.AddProject("abc12", "Test Project")
+	env.writeFile("gosf.toml", "[project]\nid = \"abc12\"\n")
+	env.writeFile("data.csv", "content")
+
+	_, stderr, code := env.run("push", "data.csv", "abc12:/data.csv", "--no-track", "--quiet")
+	if code != 0 {
+		t.Fatalf("push exit %d; stderr=%s", code, stderr)
+	}
+	toml := env.readFile("gosf.toml")
+	if strings.Contains(toml, "data.csv") {
+		t.Errorf("--no-track: manifest should not contain data.csv:\n%s", toml)
+	}
+}
+
+func TestPush_DuplicateRemoteConflict(t *testing.T) {
+	env := newTestEnv(t)
+	env.srv.AddProject("abc12", "Test Project")
+	env.writeFile("gosf.toml", `[project]
+id = "abc12"
+
+[[files]]
+local = "other/data.csv"
+remote = "/data.csv"
+direction = "push"
+version = 0
+md5 = ""
+`)
+	env.writeFile("data.csv", "new content")
+
+	_, stderr, code := env.run("push", "data.csv", "abc12:/data.csv", "--quiet")
+	if code == 0 {
+		t.Error("expected error when pushing to already-tracked remote from different local path")
+	}
+	if !strings.Contains(stderr, "already tracked") {
+		t.Errorf("stderr should mention 'already tracked': %s", stderr)
+	}
+}
+
+func TestPush_BarePushFollowsManifest(t *testing.T) {
+	env := newTestEnv(t)
+	env.srv.AddProject("abc12", "Test Project")
+	env.writeFile("data/report.csv", "report data")
+	env.writeFile("gosf.toml", `[project]
+id = "abc12"
+
+[[files]]
+local = "data/report.csv"
+remote = "/data/report.csv"
+direction = "push"
+version = 0
+md5 = ""
+`)
+
+	_, stderr, code := env.run("push", "--quiet")
+	if code != 0 {
+		t.Fatalf("bare push exit %d; stderr=%s", code, stderr)
+	}
+	uploads := env.srv.Uploads()
+	if len(uploads) == 0 {
+		t.Fatal("expected upload from bare push")
+	}
+	if uploads[0].Path != "/data/report.csv" {
+		t.Errorf("upload path = %q, want /data/report.csv", uploads[0].Path)
+	}
+	toml := env.readFile("gosf.toml")
+	if !strings.Contains(toml, "version = 1") {
+		t.Errorf("expected version = 1 after bare push:\n%s", toml)
+	}
+}
+
+func TestPush_BarePushNoProjectID(t *testing.T) {
+	env := newTestEnv(t)
+	env.writeFile("gosf.toml", "")
+
+	_, stderr, code := env.run("push")
+	if code == 0 {
+		t.Error("expected error for bare push with no project configured")
+	}
+	if !strings.Contains(stderr, "gosf init") {
+		t.Errorf("error should mention 'gosf init': %s", stderr)
+	}
+}
+
+func TestPush_BarePushSkipsPullEntries(t *testing.T) {
+	env := newTestEnv(t)
+	env.srv.AddProject("abc12", "Test Project")
+	env.writeFile("data/pull_only.csv", "data")
+	env.writeFile("gosf.toml", `[project]
+id = "abc12"
+
+[[files]]
+local = "data/pull_only.csv"
+remote = "/data/pull_only.csv"
+direction = "pull"
+version = 0
+md5 = ""
+`)
+
+	_, _, code := env.run("push", "--quiet")
+	if code != 0 {
+		t.Fatalf("bare push should succeed even with pull-only entries")
+	}
+	if uploads := env.srv.Uploads(); len(uploads) != 0 {
+		t.Errorf("bare push should not upload pull-only entries; got %d uploads", len(uploads))
 	}
 }
 
@@ -474,7 +730,7 @@ func TestAdd_FetchesRemoteVersion(t *testing.T) {
 	env.srv.AddProject("abc12", "Test Project")
 	f := env.srv.AddFile("abc12", "/data/counts.h5", []byte("h5 data"))
 
-	_, stderr, code := env.run("add", "data/counts.h5", "abc12:/data/counts.h5", "--direction=pull")
+	_, stderr, code := env.run("add", "data/counts.h5", "abc12:/data/counts.h5")
 	if code != 0 {
 		t.Fatalf("add exit %d; stderr=%s", code, stderr)
 	}
@@ -486,6 +742,9 @@ func TestAdd_FetchesRemoteVersion(t *testing.T) {
 	if !strings.Contains(toml, f.VersionMD5(1)) {
 		t.Errorf("expected md5 %q in gosf.toml:\n%s", f.VersionMD5(1), toml)
 	}
+	if !strings.Contains(toml, "push") {
+		t.Errorf("expected direction push in gosf.toml:\n%s", toml)
+	}
 }
 
 func TestAdd_NoRemoteFile(t *testing.T) {
@@ -493,7 +752,7 @@ func TestAdd_NoRemoteFile(t *testing.T) {
 	env.srv.AddProject("abc12", "Test Project")
 	// No file on OSF — add should still work with version=0.
 
-	_, stderr, code := env.run("add", "local/new.csv", "abc12:/data/new.csv", "--direction=push")
+	_, stderr, code := env.run("add", "local/new.csv", "abc12:/data/new.csv")
 	if code != 0 {
 		t.Fatalf("add exit %d; stderr=%s", code, stderr)
 	}
@@ -508,7 +767,7 @@ func TestAdd_JSON(t *testing.T) {
 	env := newTestEnv(t)
 	env.srv.AddProject("abc12", "Test Project")
 
-	stdout, _, code := env.run("add", "model.pkl", "abc12:/results/model.pkl", "--direction=push", "--output=json")
+	stdout, _, code := env.run("add", "model.pkl", "abc12:/results/model.pkl", "--output=json")
 	if code != 0 {
 		t.Fatalf("add exit %d; stdout=%s", code, stdout)
 	}
@@ -516,14 +775,170 @@ func TestAdd_JSON(t *testing.T) {
 	if err := json.Unmarshal([]byte(stdout), &result); err != nil {
 		t.Fatalf("parse JSON: %v\n%s", err, stdout)
 	}
-	if result["local"] != "model.pkl" {
-		t.Errorf("local = %v", result["local"])
+	entries, ok := result["entries"].([]any)
+	if !ok || len(entries) == 0 {
+		t.Fatalf("expected non-empty entries array, got: %v", result["entries"])
 	}
-	if result["direction"] != "push" {
-		t.Errorf("direction = %v", result["direction"])
+	entry := entries[0].(map[string]any)
+	if entry["local"] != "model.pkl" {
+		t.Errorf("local = %v", entry["local"])
 	}
 	if result["manifest_created"] != true {
 		t.Errorf("manifest_created = %v", result["manifest_created"])
+	}
+}
+
+// ---- Init ----
+
+func TestInit_CreatesGOSFToml(t *testing.T) {
+	env := newTestEnv(t)
+	_, stderr, code := env.run("init", "abc12")
+	if code != 0 {
+		t.Fatalf("init exit %d; stderr=%s", code, stderr)
+	}
+	toml := env.readFile("gosf.toml")
+	if !strings.Contains(toml, "abc12") {
+		t.Errorf("expected abc12 in gosf.toml:\n%s", toml)
+	}
+}
+
+func TestInit_UpdatesProject(t *testing.T) {
+	env := newTestEnv(t)
+	env.writeFile("gosf.toml", "[project]\nid = \"old12\"\n")
+	_, stderr, code := env.run("init", "new99")
+	if code != 0 {
+		t.Fatalf("init exit %d; stderr=%s", code, stderr)
+	}
+	toml := env.readFile("gosf.toml")
+	if !strings.Contains(toml, "new99") {
+		t.Errorf("expected new99 in gosf.toml:\n%s", toml)
+	}
+	if strings.Contains(toml, "old12") {
+		t.Errorf("old project id should be gone:\n%s", toml)
+	}
+}
+
+func TestInit_JSON(t *testing.T) {
+	env := newTestEnv(t)
+	stdout, _, code := env.run("init", "abc12", "--output=json")
+	if code != 0 {
+		t.Fatalf("init exit %d; stdout=%s", code, stdout)
+	}
+	var result map[string]any
+	if err := json.Unmarshal([]byte(stdout), &result); err != nil {
+		t.Fatalf("parse JSON: %v\n%s", err, stdout)
+	}
+	if result["project"] != "abc12" {
+		t.Errorf("project = %v", result["project"])
+	}
+	if result["created"] != true {
+		t.Errorf("created = %v", result["created"])
+	}
+}
+
+// ---- Add (new scp-style behaviour) ----
+
+func TestAdd_NoDestMirrorsPath(t *testing.T) {
+	env := newTestEnv(t)
+	env.srv.AddProject("abc12", "Test Project")
+	env.writeFile("gosf.toml", "[project]\nid = \"abc12\"\n")
+
+	_, stderr, code := env.run("add", "data/file.txt")
+	if code != 0 {
+		t.Fatalf("add exit %d; stderr=%s", code, stderr)
+	}
+	toml := env.readFile("gosf.toml")
+	if !strings.Contains(toml, "/data/file.txt") {
+		t.Errorf("expected /data/file.txt in gosf.toml:\n%s", toml)
+	}
+	if !strings.Contains(toml, "push") {
+		t.Errorf("expected direction push in gosf.toml:\n%s", toml)
+	}
+}
+
+func TestAdd_DestDirectory(t *testing.T) {
+	env := newTestEnv(t)
+	env.srv.AddProject("abc12", "Test Project")
+	env.writeFile("gosf.toml", "[project]\nid = \"abc12\"\n")
+
+	_, stderr, code := env.run("add", "local/file.txt", "abc12:/results/")
+	if code != 0 {
+		t.Fatalf("add exit %d; stderr=%s", code, stderr)
+	}
+	toml := env.readFile("gosf.toml")
+	if !strings.Contains(toml, "/results/file.txt") {
+		t.Errorf("expected /results/file.txt in gosf.toml:\n%s", toml)
+	}
+}
+
+func TestAdd_DirectoryRecursion(t *testing.T) {
+	env := newTestEnv(t)
+	env.srv.AddProject("abc12", "Test Project")
+	env.writeFile("gosf.toml", "[project]\nid = \"abc12\"\n")
+	env.writeFile("data/dir/file1.txt", "content")
+	env.writeFile("data/dir/sub/file2.txt", "content")
+
+	// No trailing slash: dir name preserved in remote path.
+	_, stderr, code := env.run("add", "data/dir", "abc12:/results/")
+	if code != 0 {
+		t.Fatalf("add exit %d; stderr=%s", code, stderr)
+	}
+	toml := env.readFile("gosf.toml")
+	if !strings.Contains(toml, "/results/dir/file1.txt") {
+		t.Errorf("expected /results/dir/file1.txt:\n%s", toml)
+	}
+	if !strings.Contains(toml, "/results/dir/sub/file2.txt") {
+		t.Errorf("expected /results/dir/sub/file2.txt:\n%s", toml)
+	}
+}
+
+func TestAdd_DirTrailingSlash(t *testing.T) {
+	env := newTestEnv(t)
+	env.srv.AddProject("abc12", "Test Project")
+	env.writeFile("gosf.toml", "[project]\nid = \"abc12\"\n")
+	env.writeFile("data/dir/file.txt", "content")
+
+	// Trailing slash: dir name stripped, contents go directly under dest.
+	_, stderr, code := env.run("add", "data/dir/", "abc12:/results/")
+	if code != 0 {
+		t.Fatalf("add exit %d; stderr=%s", code, stderr)
+	}
+	toml := env.readFile("gosf.toml")
+	if !strings.Contains(toml, "/results/file.txt") {
+		t.Errorf("expected /results/file.txt (dir name stripped):\n%s", toml)
+	}
+}
+
+func TestAdd_DirectionFlagRemoved(t *testing.T) {
+	env := newTestEnv(t)
+	env.srv.AddProject("abc12", "Test Project")
+	env.writeFile("gosf.toml", "[project]\nid = \"abc12\"\n")
+
+	_, _, code := env.run("add", "file.txt", "abc12:/file.txt", "--direction=pull")
+	if code == 0 {
+		t.Error("expected non-zero exit: --direction flag should no longer exist")
+	}
+}
+
+func TestAdd_AlreadyTracked(t *testing.T) {
+	env := newTestEnv(t)
+	env.srv.AddProject("abc12", "Test Project")
+	env.writeFile("gosf.toml", `[project]
+id = "abc12"
+
+[[files]]
+local = "data/file.txt"
+remote = "/data/file.txt"
+direction = "push"
+version = 0
+md5 = ""
+`)
+	_, stderr, code := env.run("add", "data/file.txt", "abc12:/data/file.txt")
+	if code == 0 {
+		t.Error("expected error when adding already-tracked file")
+	}
+	if !strings.Contains(stderr, "already") {
+		t.Errorf("stderr should mention 'already': %s", stderr)
 	}
 }
 

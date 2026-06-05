@@ -75,43 +75,41 @@ func TestPushResultJSON(t *testing.T) {
 
 func TestAddResultJSON(t *testing.T) {
 	r := AddResult{
-		Local:     "data/counts.h5",
-		Remote:    "/data/counts.h5",
-		Project:   "abc12",
-		Direction: "pull",
-		Version:   3,
-		MD5:       "deadbeef",
+		Entries: []AddEntry{
+			{Local: "data/counts.h5", Remote: "/data/counts.h5", Project: "abc12", Version: 3, MD5: "deadbeef"},
+		},
+		ManifestCreated: false,
 	}
 	m := roundTrip(t, r)
-	if m["local"] != "data/counts.h5" {
-		t.Errorf("local = %v", m["local"])
+	entries, ok := m["entries"].([]any)
+	if !ok || len(entries) != 1 {
+		t.Fatalf("entries = %v", m["entries"])
 	}
-	if m["direction"] != "pull" {
-		t.Errorf("direction = %v", m["direction"])
+	e := entries[0].(map[string]any)
+	if e["local"] != "data/counts.h5" {
+		t.Errorf("local = %v", e["local"])
 	}
-	if m["version"].(float64) != 3 {
-		t.Errorf("version = %v", m["version"])
+	if e["version"].(float64) != 3 {
+		t.Errorf("version = %v", e["version"])
 	}
-	if m["md5"] != "deadbeef" {
-		t.Errorf("md5 = %v", m["md5"])
+	if e["md5"] != "deadbeef" {
+		t.Errorf("md5 = %v", e["md5"])
 	}
 }
 
 func TestAddResult_NotYetPushed(t *testing.T) {
 	r := AddResult{
-		Local: "data/new.h5", Remote: "/data/new.h5",
-		Project: "abc12", Direction: "push", Version: 0, MD5: "",
+		Entries:         []AddEntry{{Local: "data/new.h5", Remote: "/data/new.h5", Project: "abc12"}},
 		ManifestCreated: true,
 	}
 	m := roundTrip(t, r)
-	if m["version"].(float64) != 0 {
-		t.Errorf("version = %v, want 0", m["version"])
-	}
-	if m["md5"] != "" {
-		t.Errorf("md5 = %v, want empty", m["md5"])
-	}
 	if m["manifest_created"] != true {
 		t.Errorf("manifest_created = %v, want true", m["manifest_created"])
+	}
+	entries := m["entries"].([]any)
+	e := entries[0].(map[string]any)
+	if e["version"].(float64) != 0 {
+		t.Errorf("version = %v, want 0", e["version"])
 	}
 }
 

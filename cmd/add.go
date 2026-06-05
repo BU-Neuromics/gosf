@@ -3,6 +3,8 @@ package cmd
 import (
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -10,143 +12,226 @@ import (
 	"github.com/BU-Neuromics/gosf/internal/config"
 	"github.com/BU-Neuromics/gosf/internal/manifest"
 	"github.com/BU-Neuromics/gosf/internal/output"
+	"github.com/BU-Neuromics/gosf/internal/pathutil"
 	"github.com/BU-Neuromics/gosf/internal/resolver"
 )
 
-var addDirection string
-
 var addCmd = &cobra.Command{
-	Use:   "add <local-path> <project>:<remote-path>",
-	Short: "Add a file to the gosf.toml sync manifest",
-	Long: `Add a local file entry to gosf.toml.
+	Use:   "add <local-path> [<project>:]<remote-path>",
+	Short: "Stage a local file or directory for push to OSF",
+	Long: `Add a local file or directory to gosf.toml, staged for push to OSF.
+Direction is always "push". Use 'gosf pull' to record downloaded files.
 
-The direction controls whether the file is pushed, pulled, or both.
-Defaults to push if --direction is not specified.
+If <remote-path> is omitted the remote path mirrors the local path.
+If <local-path> is a directory, all files in it are added recursively.
 
-Examples:
-  gosf add data/raw/counts.h5 abc12:/data/raw/counts.h5
-  gosf add results/model.pkl  abc12:/results/model.pkl  --direction=pull`,
-	Args:         cobra.ExactArgs(2),
+Path rules follow scp conventions:
+  gosf add data/file.txt                       remote: /data/file.txt (mirror)
+  gosf add data/file.txt abc12:/results/       remote: /results/file.txt
+  gosf add data/file.txt abc12:/results/out.txt  remote: /results/out.txt
+  gosf add data/dir/ abc12:/results/           remote: /results/<files> (contents)
+  gosf add data/dir  abc12:/results/           remote: /results/dir/<files> (dir itself)`,
+	Args:         cobra.RangeArgs(1, 2),
 	SilenceUsage: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		localPath := args[0]
-		target, err := resolver.ParseTarget(args[1])
-		if err != nil {
-			return err
+		srcArg := args[0]
+		var destArg string
+		if len(args) == 2 {
+			destArg = args[1]
 		}
 
-		switch addDirection {
-		case "push", "pull", "both":
-		default:
-			return fmt.Errorf("--direction must be push, pull, or both; got %q", addDirection)
+		srcTrailingSlash := strings.HasSuffix(srcArg, "/") || strings.HasSuffix(srcArg, string(filepath.Separator))
+		cutset := "/"
+		if string(filepath.Separator) != "/" {
+			cutset += string(filepath.Separator)
+		}
+		localSrc := strings.TrimRight(srcArg, cutset)
+
+		srcInfo, statErr := os.Stat(localSrc)
+		srcIsDir := statErr == nil && srcInfo.IsDir()
+
+		// Parse remote dest for project and path.
+		var nodeID, remoteDest string
+		if destArg != "" {
+			if strings.Contains(destArg, ":") {
+				target, err := resolver.ParseTarget(destArg)
+				if err != nil {
+					return err
+				}
+				nodeID = target.NodeID
+				remoteDest = target.Path
+				// Normalise: ParseTarget always returns path starting with /;
+				// if it ends with / (root or explicit dir) keep the slash for
+				// pathutil to honour.
+				if strings.HasSuffix(destArg[strings.Index(destArg, ":")+1:], "/") &&
+					!strings.HasSuffix(remoteDest, "/") {
+					remoteDest += "/"
+				}
+			} else {
+				remoteDest = destArg
+				if !strings.HasPrefix(remoteDest, "/") {
+					remoteDest = "/" + remoteDest
+				}
+			}
 		}
 
-		jsonMode := flagOutput == "json"
-
-		// Find or create gosf.toml.
-		manifestPath, repoRoot, err := manifest.FindManifest()
+		// Load or create gosf.toml.
+		manifestPath, _, findErr := manifest.FindManifest()
 		var m *manifest.Manifest
 		manifestCreated := false
-		if manifest.IsNotFound(err) {
-			manifestPath = "gosf.toml"
-			m = &manifest.Manifest{}
-			manifestCreated = true
-			if !jsonMode {
-				fmt.Fprintln(os.Stdout, "Created gosf.toml. Set [project].id before running sync.")
+		if manifest.IsNotFound(findErr) {
+			if nodeID == "" {
+				return fmt.Errorf("no project configured — run: gosf init <project-id>")
 			}
-		} else if err != nil {
-			return err
+			manifestPath = "gosf.toml"
+			m = &manifest.Manifest{Project: manifest.ProjectConfig{ID: nodeID}}
+			manifestCreated = true
+		} else if findErr != nil {
+			return findErr
 		} else {
+			var err error
 			m, err = manifest.Load(manifestPath)
 			if err != nil {
 				return err
 			}
-			_ = repoRoot
 		}
 
-		// Check for duplicate local path.
-		if findEntryByLocal(m, localPath) >= 0 {
-			return fmt.Errorf("entry with local path %q already exists in gosf.toml", localPath)
+		// Resolve project.
+		if nodeID == "" {
+			nodeID = m.Project.ID
+		}
+		if nodeID == "" {
+			return fmt.Errorf("no project configured — run: gosf init <project-id>")
 		}
 
-		// Resolve project for this entry.
-		proj := target.NodeID
-		defaultProj := m.Project.ID
+		// Determine per-entry project field (empty when nodeID matches manifest default).
 		entryProject := ""
-		if proj != defaultProj && defaultProj != "" {
-			entryProject = proj
-		}
-		if defaultProj == "" {
-			entryProject = proj
+		if nodeID != m.Project.ID {
+			entryProject = nodeID
 		}
 
-		// Check remote for existing file.
 		token := config.LoadToken(flagToken)
 		c := client.New(token)
 		res := resolver.New(c)
 
-		entry := manifest.Entry{
-			Local:     localPath,
-			Remote:    target.Path,
-			Direction: addDirection,
-			Project:   entryProject,
-		}
+		var entries []manifest.Entry
+		var addEntries []output.AddEntry
 
-		existingItem, resolveErr := res.Resolve(cmd.Context(), proj, target.Path)
-		if resolveErr == nil {
-			versions, fetchErr := c.GetFileVersions(cmd.Context(), existingItem.ID)
-			if fetchErr == nil && len(versions) > 0 {
-				latest := versions[0] // newest-first
-				entry.Version = latest.Attributes.Version
-				entry.MD5 = latest.Attributes.Extra.Hashes.MD5
-			}
-		}
-
-		m.Files = append(m.Files, entry)
-
-		if jsonMode {
-			result := output.AddResult{
-				Local:           localPath,
-				Remote:          target.Path,
-				Project:         proj,
-				Direction:       addDirection,
-				Version:         entry.Version,
-				MD5:             entry.MD5,
-				ManifestCreated: manifestCreated,
-			}
-			if err := manifest.Save(m, manifestPath); err != nil {
+		if srcIsDir {
+			// Directory: recurse and create one entry per file.
+			localBase, remoteBase := pathutil.PushDirBases(localSrc, remoteDest, srcTrailingSlash)
+			err := filepath.WalkDir(localSrc, func(path string, d os.DirEntry, walkErr error) error {
+				if walkErr != nil || d.IsDir() {
+					return walkErr
+				}
+				remotePath := pathutil.MapFilePath(localBase, remoteBase, filepath.ToSlash(path))
+				if findEntryByLocal(m, path) >= 0 {
+					return fmt.Errorf("entry with local path %q already exists in gosf.toml", path)
+				}
+				e := manifest.Entry{
+					Local:     path,
+					Remote:    remotePath,
+					Direction: "push",
+					Project:   entryProject,
+				}
+				entries = append(entries, e)
+				addEntries = append(addEntries, output.AddEntry{
+					Local:   path,
+					Remote:  remotePath,
+					Project: nodeID,
+				})
+				return nil
+			})
+			if err != nil {
 				return err
 			}
-			return output.PrintJSON(os.Stdout, result)
-		}
-
-		// Text output.
-		if entry.Version > 0 {
-			fmt.Fprintf(os.Stdout, "Added %s → %s:%s  (direction=%s, v%d)\n",
-				localPath, proj, target.Path, addDirection, entry.Version)
 		} else {
-			fmt.Fprintf(os.Stdout, "Added %s → %s:%s  (direction=%s, not yet pushed)\n",
-				localPath, proj, target.Path, addDirection)
-		}
-
-		if info, statErr := os.Stat(localPath); statErr == nil {
-			if info.Size() > 50*1024*1024 {
-				fmt.Fprintf(os.Stdout, "Tip: consider adding %s to .gitignore (large file, %s)\n",
-					localPath, formatSizeMB(info.Size()))
+			// Single file.
+			remotePath := pathutil.FileRemotePath(localSrc, remoteDest)
+			if findEntryByLocal(m, localSrc) >= 0 {
+				return fmt.Errorf("entry with local path %q already exists in gosf.toml", localSrc)
 			}
-		} else if addDirection == "push" || addDirection == "both" {
-			fmt.Fprintf(os.Stdout, "Note: local file not found. Create it before running gosf sync.\n")
+
+			entry := manifest.Entry{
+				Local:     localSrc,
+				Remote:    remotePath,
+				Direction: "push",
+				Project:   entryProject,
+			}
+
+			// Fetch remote version if the file already exists on OSF.
+			if existingItem, err := res.Resolve(cmd.Context(), nodeID, remotePath); err == nil {
+				if versions, err := c.GetFileVersions(cmd.Context(), existingItem.ID); err == nil && len(versions) > 0 {
+					latest := versions[0]
+					entry.Version = latest.Attributes.Version
+					entry.MD5 = latest.Attributes.Extra.Hashes.MD5
+				}
+			}
+
+			entries = []manifest.Entry{entry}
+			addEntries = []output.AddEntry{{
+				Local:   localSrc,
+				Remote:  remotePath,
+				Project: nodeID,
+				Version: entry.Version,
+				MD5:     entry.MD5,
+			}}
 		}
 
-		return manifest.Save(m, manifestPath)
+		if len(entries) == 0 {
+			return fmt.Errorf("no files found under %q", localSrc)
+		}
+
+		m.Files = append(m.Files, entries...)
+
+		if err := manifest.Save(m, manifestPath); err != nil {
+			return err
+		}
+
+		jsonMode := flagOutput == "json"
+		if jsonMode {
+			return output.PrintJSON(os.Stdout, output.AddResult{
+				Entries:         addEntries,
+				ManifestCreated: manifestCreated,
+			})
+		}
+
+		for _, e := range addEntries {
+			if e.Version > 0 {
+				fmt.Fprintf(os.Stdout, "Added %s → %s:%s  (v%d)\n", e.Local, e.Project, e.Remote, e.Version)
+			} else {
+				fmt.Fprintf(os.Stdout, "Added %s → %s:%s  (not yet pushed)\n", e.Local, e.Project, e.Remote)
+			}
+		}
+
+		// Warn about large local files.
+		for _, e := range entries {
+			if info, err := os.Stat(e.Local); err == nil && info.Size() > 50*1024*1024 {
+				fmt.Fprintf(os.Stdout, "Tip: consider adding %s to .gitignore (%s)\n",
+					e.Local, formatSizeMB(info.Size()))
+			}
+		}
+
+		return nil
 	},
 }
 
-// findEntryByLocal returns the index of the first entry with the given local path,
-// or -1 if not found.
+// findEntryByLocal returns the index of the first manifest entry with the
+// given local path, or -1 if not found.
 func findEntryByLocal(m *manifest.Manifest, local string) int {
 	for i, e := range m.Files {
 		if e.Local == local {
+			return i
+		}
+	}
+	return -1
+}
+
+// findEntryByRemote returns the index of the first manifest entry whose
+// resolved project and remote path match, or -1 if not found.
+func findEntryByRemote(m *manifest.Manifest, projectID, remotePath string) int {
+	for i, e := range m.Files {
+		if e.Remote == remotePath && e.ResolveProject(m.Project.ID) == projectID {
 			return i
 		}
 	}
@@ -158,6 +243,5 @@ func formatSizeMB(n int64) string {
 }
 
 func init() {
-	addCmd.Flags().StringVar(&addDirection, "direction", "push", "Sync direction: push, pull, or both")
 	rootCmd.AddCommand(addCmd)
 }
