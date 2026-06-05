@@ -31,7 +31,7 @@ and test coverage.
 | `gosf wiki ls <project>` | List wiki pages |
 | `gosf wiki get <project> <page>` | Print wiki page content |
 | `gosf wiki set <project> <page>` | Create or update a wiki page (`--file` or `--message`) |
-| `gosf mkproject <parent> --title <t>` | Create a sub-component under an existing project |
+| `gosf mkproject [parent] --title <t>` | Create a top-level project, or a sub-component when a parent GUID is given |
 
 ## Later / under consideration
 
