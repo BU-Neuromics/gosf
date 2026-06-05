@@ -22,7 +22,7 @@ func TestIsOSFHost(t *testing.T) {
 		{"127.0.0.1", false},
 		{"127.0.0.1:8080", false},
 		{"localhost", false},
-		{"notosf.io", false},      // suffix match must be .osf.io, not osf.io
+		{"notosf.io", false}, // suffix match must be .osf.io, not osf.io
 		{"myosf.io", false},
 	}
 	for _, tc := range cases {
