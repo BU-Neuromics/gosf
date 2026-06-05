@@ -101,7 +101,7 @@ func (c *WaterbutlerClient) Download(ctx context.Context, downloadURL, destPath 
 
 	if _, err := io.Copy(dst, resp.Body); err != nil {
 		// Don't leave a truncated file behind on a failed transfer.
-		f.Close()
+		_ = f.Close()
 		_ = os.Remove(destPath)
 		return fmt.Errorf("writing %s: %w", destPath, err)
 	}

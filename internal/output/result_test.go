@@ -151,8 +151,7 @@ func TestVersionsResultEmptyIsArray(t *testing.T) {
 // serialises as [] (not null) when no entries are present.
 func TestStatusAndSyncJSONNilGuards(t *testing.T) {
 	// StatusItems
-	var items []StatusItem
-	items = make([]StatusItem, 0)
+	items := make([]StatusItem, 0)
 	var buf bytes.Buffer
 	if err := PrintJSON(&buf, items); err != nil {
 		t.Fatalf("PrintJSON: %v", err)
@@ -163,8 +162,7 @@ func TestStatusAndSyncJSONNilGuards(t *testing.T) {
 
 	// SyncItems
 	buf.Reset()
-	var syncItems []SyncItem
-	syncItems = make([]SyncItem, 0)
+	syncItems := make([]SyncItem, 0)
 	if err := PrintJSON(&buf, syncItems); err != nil {
 		t.Fatalf("PrintJSON: %v", err)
 	}
