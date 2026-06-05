@@ -1,0 +1,10 @@
+{
+  "$schema": "https://skills.sh/schemas/skills.sh.schema.json",
+  "groupings": [
+    {
+      "title": "OSF",
+      "description": "Skills for working with the Open Science Framework (OSF) via gosf.",
+      "skills": ["gosf"]
+    }
+  ]
+}

@@ -386,6 +386,21 @@ In JSON mode, `gosf rm` requires `--yes` (there is no interactive prompt).
 
 `gosf` exits non-zero on any error, so it composes cleanly in scripts and CI.
 
+## For coding agents
+
+`gosf` ships a [skills.sh](https://skills.sh) agent skill so AI coding agents
+can understand and invoke it without hand-written instructions.
+
+Install the skill in your project (supported by Claude Code, GitHub Copilot,
+Codex, and 38+ other agents):
+
+```console
+npx skills add BU-Neuromics/gosf
+```
+
+The skill covers authentication, path syntax, the `gosf.toml` manifest, all
+commands, and common workflows. The source lives in [`skills/gosf/SKILL.md`](./skills/gosf/SKILL.md).
+
 ## Development
 
 ```console
