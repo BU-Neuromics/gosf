@@ -44,3 +44,5 @@ Initial public release.
 - GoReleaser pipeline publishing cross-platform archives + checksums to GitHub Releases
 - GitHub Actions CI: `gofmt`, `go vet`, race-detector test suite, `golangci-lint v2`, cross-compile matrix
 - End-to-end integration test suite with an in-process fake OSF + Waterbutler server (36 tests)
+- One-liner installers: `curl … | bash` for Linux/macOS and `irm … | iex` for Windows; verifies SHA-256 checksums and supports `GOSF_INSTALL_DIR` override
+- [skills.sh](https://skills.sh) agent skill (`skills/gosf/SKILL.md`) for AI coding agents; install with `npx skills add BU-Neuromics/gosf`
