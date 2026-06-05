@@ -63,7 +63,7 @@ Examples:
 		jsonMode := flagOutput == "json"
 		quiet := flagQuiet || jsonMode
 
-		var jsonResults []syncJSONItem
+		jsonResults := make([]output.SyncItem, 0)
 		manifestChanged := false
 		pullSkipCount := 0
 
@@ -104,7 +104,7 @@ Examples:
 					manifestChanged = true
 				}
 				if jsonMode {
-					jsonResults = append(jsonResults, makeSyncJSON(entry, state, action, remoteVersions))
+					jsonResults = append(jsonResults, makeSyncItem(entry, state, action, remoteVersions))
 				}
 				continue
 			}
@@ -113,7 +113,7 @@ Examples:
 				if !syncPullNew {
 					pullSkipCount++
 					if jsonMode {
-						jsonResults = append(jsonResults, makeSyncJSON(entry, state, "skipped", remoteVersions))
+						jsonResults = append(jsonResults, makeSyncItem(entry, state, "skipped", remoteVersions))
 					}
 					continue
 				}
@@ -125,7 +125,7 @@ Examples:
 					manifestChanged = true
 				}
 				if jsonMode {
-					jsonResults = append(jsonResults, makeSyncJSON(entry, state, action, remoteVersions))
+					jsonResults = append(jsonResults, makeSyncItem(entry, state, action, remoteVersions))
 				}
 			}
 		}
@@ -361,16 +361,8 @@ func processPullEntry(
 	return "noop", false, nil
 }
 
-type syncJSONItem struct {
-	Path                string `json:"path"`
-	State               string `json:"state"`
-	DeclaredVersion     int    `json:"declared_version"`
-	RemoteLatestVersion int    `json:"remote_latest_version,omitempty"`
-	ActionTaken         string `json:"action_taken"`
-}
-
-func makeSyncJSON(entry *manifest.Entry, state manifest.FileState, action string, remoteVersions []manifest.RemoteVersion) syncJSONItem {
-	item := syncJSONItem{
+func makeSyncItem(entry *manifest.Entry, state manifest.FileState, action string, remoteVersions []manifest.RemoteVersion) output.SyncItem {
+	item := output.SyncItem{
 		Path:            entry.Local,
 		State:           state.String(),
 		DeclaredVersion: entry.Version,

@@ -46,7 +46,7 @@ var statusCmd = &cobra.Command{
 			fmt.Fprintln(w, "DIR\tSTATUS\tLOCAL PATH\tVER\tDETAIL")
 		}
 
-		var jsonItems []statusJSONItem
+		jsonItems := make([]output.StatusItem, 0)
 
 		for _, entry := range m.Files {
 			localAbs := filepath.Join(repoRoot, entry.Local)
@@ -73,7 +73,7 @@ var statusCmd = &cobra.Command{
 			}
 
 			if jsonMode {
-				jsonItems = append(jsonItems, buildStatusJSON(entry, state, remoteVersions))
+				jsonItems = append(jsonItems, buildStatusItem(entry, state, remoteVersions))
 			} else {
 				statusStr, detail := stateDisplay(state, entry, remoteVersions)
 				verStr := verLabel(entry.Version)
@@ -147,17 +147,8 @@ func init() {
 	rootCmd.AddCommand(statusCmd)
 }
 
-// JSON output for status (one object per file).
-type statusJSONItem struct {
-	Path                string `json:"path"`
-	Direction           string `json:"direction"`
-	State               string `json:"state"`
-	DeclaredVersion     int    `json:"declared_version"`
-	RemoteLatestVersion int    `json:"remote_latest_version,omitempty"`
-}
-
-func buildStatusJSON(entry manifest.Entry, state manifest.FileState, remoteVersions []manifest.RemoteVersion) statusJSONItem {
-	item := statusJSONItem{
+func buildStatusItem(entry manifest.Entry, state manifest.FileState, remoteVersions []manifest.RemoteVersion) output.StatusItem {
+	item := output.StatusItem{
 		Path:            entry.Local,
 		Direction:       entry.Direction,
 		State:           state.String(),
