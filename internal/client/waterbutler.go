@@ -219,8 +219,14 @@ func (c *WaterbutlerClient) Delete(ctx context.Context, deleteURL string) error 
 //   - nodeID:     OSF project/component GUID
 //   - parentPath: absolute path of the parent folder (e.g. "/" or "/data/results")
 //   - filename:   name of the new file
+//
+// Set GOSF_FILES_BASE to override the Waterbutler base URL (useful in tests).
 func BuildUploadURL(nodeID, parentPath, filename string) string {
-	base := wbBase + "/v1/resources/" + nodeID + "/providers/osfstorage/"
+	filesBase := os.Getenv("GOSF_FILES_BASE")
+	if filesBase == "" {
+		filesBase = wbBase
+	}
+	base := filesBase + "/v1/resources/" + nodeID + "/providers/osfstorage/"
 
 	p := strings.Trim(parentPath, "/")
 	if p != "" {
