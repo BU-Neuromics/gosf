@@ -41,6 +41,20 @@ var rootCmd = &cobra.Command{
 	},
 }
 
+// exitCodeError is an error that carries a specific exit code without printing
+// an additional message. Returned by commands like gosf status.
+type exitCodeError struct {
+	code int
+	msg  string
+}
+
+func (e *exitCodeError) Error() string {
+	if e.msg != "" {
+		return e.msg
+	}
+	return fmt.Sprintf("exit code %d", e.code)
+}
+
 // Execute runs the root command and exits with a non-zero code on error.
 // It installs a signal-aware context so that Ctrl-C (SIGINT) or SIGTERM
 // cancels in-flight HTTP requests and aborts long transfers cleanly.

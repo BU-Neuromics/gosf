@@ -129,19 +129,6 @@ func verLabel(version int) string {
 	return fmt.Sprintf("v%d", version)
 }
 
-// exitCodeError is an error that carries a specific exit code.
-type exitCodeError struct {
-	code int
-	msg  string
-}
-
-func (e *exitCodeError) Error() string {
-	if e.msg != "" {
-		return e.msg
-	}
-	return fmt.Sprintf("exit code %d", e.code)
-}
-
 func init() {
 	statusCmd.Flags().BoolVar(&statusNoCheckRemote, "no-check-remote", false, "Skip remote version lookups (faster, but cannot detect BEHIND or REMOTE_NEWER)")
 	rootCmd.AddCommand(statusCmd)

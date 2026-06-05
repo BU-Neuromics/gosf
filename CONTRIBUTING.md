@@ -6,7 +6,7 @@ process.
 
 ## Prerequisites
 
-- Go 1.22 or later (`go.mod` is the source of truth)
+- Go 1.24 or later (`go.mod` is the source of truth)
 - `golangci-lint` v2 for local linting (`brew install golangci-lint` or see
   [golangci-lint install docs](https://golangci-lint.run/welcome/install/))
 - A personal OSF token for manual smoke tests (optional but useful)

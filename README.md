@@ -95,11 +95,15 @@ If none are set, `gosf` runs unauthenticated (public projects only).
 
 ### Headless / HPC systems
 
-If there's no OS keychain available, store the token in the config file instead:
+If there's no OS keychain available, store the token in a local token file instead:
 
 ```console
 gosf auth login --no-keychain
 ```
+
+The token is written to `~/.config/gosf/token` with mode `0600`. This file is
+separate from `config.toml` so the config file remains safe to commit to version
+control.
 
 Or skip persistent storage entirely and use the environment variable:
 
@@ -109,6 +113,14 @@ gosf ls abc12
 ```
 
 The token is never printed in logs or error output.
+
+### Logging out
+
+```console
+gosf auth logout
+```
+
+Removes the token from the OS keychain and the token file.
 
 ## Path syntax
 
@@ -148,7 +160,13 @@ $ gosf pull abc12:/data/results.csv            # → ./results.csv
 $ gosf pull abc12:/data/results.csv out.csv    # → ./out.csv
 $ gosf pull abc12:/data/ ./local-copy          # download the folder tree
 $ gosf pull abc12: --dry-run                   # preview a whole-project pull
+$ gosf pull abc12:/data/counts.h5 --version=2  # download a specific version
 ```
+
+Flags:
+- `--version=<n>` — download a specific historical version instead of the latest.
+  Only valid for single-file targets; ignored for directory pulls.
+- `--dry-run` — list what would be downloaded without writing any files.
 
 ### `gosf push <src> <project>:<path>`
 
@@ -260,6 +278,12 @@ $ gosf sync --force        # with --pull-new, overwrite locally modified files
 
 With `--pull-new`, pull-eligible (`direction=pull` or `both`) entries that are
 `MISSING` or `BEHIND` are also downloaded.
+
+Flags:
+- `--pull-new` — pull MISSING/BEHIND pull-eligible entries in addition to pushing.
+- `--force` — with `--pull-new`, overwrite locally modified files.
+- `--dry-run` — show what would happen without making any changes.
+- `--no-check-remote` — skip remote version lookups (faster; cannot detect `BEHIND` or `REMOTE_NEWER`).
 
 ## Sync manifest (`gosf.toml`)
 

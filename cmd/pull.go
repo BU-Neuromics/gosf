@@ -31,7 +31,9 @@ Examples:
   gosf pull abc12:/data/results/file.csv out.csv  # → ./out.csv
   gosf pull abc12:/data/                          # → ./data/... (all files)
   gosf pull abc12:/data/ ./local-copy             # → ./local-copy/...
-  gosf pull abc12:                                # download entire project`,
+  gosf pull abc12:                                # download entire project
+  gosf pull abc12:/data/counts.h5 --version=2     # download specific version
+  gosf pull abc12: --dry-run                      # preview without downloading`,
 	Args:         cobra.RangeArgs(1, 2),
 	SilenceUsage: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
