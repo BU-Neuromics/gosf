@@ -5,6 +5,31 @@ All notable changes to this project will be documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.0] - 2026-06-05
+
+### Added
+
+- `gosf init <project-id>` — create or update `gosf.toml` with a default project GUID; idempotent
+- `gosf pull` bare form (no arguments) — download all `direction=pull|both` manifest entries that are missing or behind
+- `gosf pull` auto-tracking — after a successful download, writes/updates the entry in `gosf.toml` with `direction=pull`, version, and MD5; opt out with `--no-track`
+- `gosf push` bare form (no arguments) — upload all `direction=push|both` manifest entries that are ahead of manifest or not yet pushed
+- `gosf push` auto-tracking — after a successful upload, writes/updates the entry in `gosf.toml` with `direction=push`, version, and MD5; opt out with `--no-track`
+- scp-style path semantics on `gosf pull`, `gosf push`, and `gosf add`: trailing slash on source copies contents only; no trailing slash copies the directory itself; omitted dest mirrors the source path
+- `gosf add` directory recursion — `gosf add data/dir abc12:/remote/` walks the directory and creates one manifest entry per file
+- `gosf add` no-dest form — `gosf add local/path/file.txt` mirrors to remote `/local/path/file.txt`
+
+### Changed
+
+- `gosf sync` now processes **both** push-eligible and pull-eligible entries by default; the `--pull-new` flag has been removed
+- `gosf add` direction is always `push`; the `--direction` flag has been removed
+- `gosf push` and `gosf pull` refuse to operate on entries whose manifest `direction` conflicts (e.g. pushing a `direction=pull` file) with a clear error message
+- Duplicate remote-tracking guard: pushing or pulling to a remote path already tracked under a different local path is a hard error
+
+### Fixed
+
+- `gosf sync` now requires `[project].id` to be set in `gosf.toml`; an empty project ID produces an actionable error pointing to `gosf init`
+- `gosf pull` with default dest `"."` now correctly mirrors the remote path instead of treating `.` as a directory name
+
 ## [1.1.0] - 2026-06-05
 
 ### Added
