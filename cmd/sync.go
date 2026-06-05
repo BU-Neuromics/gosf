@@ -16,7 +16,6 @@ import (
 )
 
 var (
-	syncPullNew       bool
 	syncForce         bool
 	syncDryRun        bool
 	syncNoCheckRemote bool
@@ -27,13 +26,13 @@ var syncCmd = &cobra.Command{
 	Short: "Sync local files with OSF according to gosf.toml",
 	Long: `Sync files declared in gosf.toml between local storage and OSF.
 
-Default behavior: push all push-eligible entries (direction=push or direction=both).
-Use --pull-new to also pull missing or stale pull-eligible entries.
+Default behavior: push all push-eligible entries (direction=push or direction=both)
+and pull all pull-eligible entries (direction=pull or direction=both) that are
+missing or behind.
 
 Examples:
-  gosf sync                         # push all push-eligible files
-  gosf sync --pull-new              # also pull missing/behind pull files
-  gosf sync --pull-new --force      # overwrite locally modified pull files
+  gosf sync                         # push and pull all tracked files
+  gosf sync --force                 # overwrite locally modified pull files
   gosf sync --dry-run               # show what would happen
   gosf sync --no-check-remote       # faster, but skips BEHIND/REMOTE_NEWER detection`,
 	SilenceUsage: true,
@@ -51,6 +50,10 @@ Examples:
 			return err
 		}
 
+		if m.Project.ID == "" {
+			return fmt.Errorf("no project configured — run: gosf init <project-id>")
+		}
+
 		token := config.LoadToken(flagToken)
 		if token == "" {
 			return fmt.Errorf("sync requires authentication — run 'gosf auth login' or set OSF_TOKEN")
@@ -65,7 +68,6 @@ Examples:
 
 		jsonResults := make([]output.SyncItem, 0)
 		manifestChanged := false
-		pullSkipCount := 0
 
 		for i := range m.Files {
 			entry := &m.Files[i]
@@ -77,23 +79,27 @@ Examples:
 				return fmt.Errorf("computing MD5 for %s: %w", entry.Local, err)
 			}
 
+			isPushEligible := entry.Direction == "push" || entry.Direction == "both"
+			isPullEligible := entry.Direction == "pull" || entry.Direction == "both"
+
 			var remoteVersions []manifest.RemoteVersion
 			var resolvedItem *client.FileItem
-			if !syncNoCheckRemote && entry.Version > 0 {
+			// Always resolve pull-eligible entries so processPullEntry has a download URL.
+			// Skip the resolve for push-only entries when --no-check-remote is set.
+			if entry.Version > 0 && (!syncNoCheckRemote || isPullEligible) {
 				item, resolveErr := res.Resolve(cmd.Context(), proj, entry.Remote)
 				if resolveErr == nil {
 					resolvedItem = &item
-					fvs, fetchErr := osfClient.GetFileVersions(cmd.Context(), item.ID)
-					if fetchErr == nil {
-						remoteVersions = fileVersionsToRemote(fvs)
+					if !syncNoCheckRemote {
+						fvs, fetchErr := osfClient.GetFileVersions(cmd.Context(), item.ID)
+						if fetchErr == nil {
+							remoteVersions = fileVersionsToRemote(fvs)
+						}
 					}
 				}
 			}
 
 			state := manifest.ClassifyFile(*entry, localMD5, remoteVersions, syncNoCheckRemote)
-
-			isPushEligible := entry.Direction == "push" || entry.Direction == "both"
-			isPullEligible := entry.Direction == "pull" || entry.Direction == "both"
 
 			if isPushEligible {
 				action, changed, err := processPushEntry(cmd.Context(), entry, proj, localAbs, state, res, wb, osfClient, quiet, jsonMode, syncDryRun)
@@ -110,13 +116,6 @@ Examples:
 			}
 
 			if isPullEligible {
-				if !syncPullNew {
-					pullSkipCount++
-					if jsonMode {
-						jsonResults = append(jsonResults, makeSyncItem(entry, state, "skipped", remoteVersions))
-					}
-					continue
-				}
 				action, changed, err := processPullEntry(cmd.Context(), entry, proj, localAbs, state, resolvedItem, wb, osfClient, repoRoot, quiet, jsonMode, syncDryRun, syncForce)
 				if err != nil {
 					return err
@@ -140,9 +139,6 @@ Examples:
 			return output.PrintJSON(os.Stdout, jsonResults)
 		}
 
-		if pullSkipCount > 0 && !quiet {
-			fmt.Fprintf(os.Stderr, "  %d pull-direction file(s) not processed. Run 'gosf sync --pull-new' to update.\n", pullSkipCount)
-		}
 		return nil
 	},
 }
@@ -375,8 +371,7 @@ func makeSyncItem(entry *manifest.Entry, state manifest.FileState, action string
 }
 
 func init() {
-	syncCmd.Flags().BoolVar(&syncPullNew, "pull-new", false, "Also pull missing/stale pull-eligible entries")
-	syncCmd.Flags().BoolVar(&syncForce, "force", false, "With --pull-new, overwrite locally modified files")
+	syncCmd.Flags().BoolVar(&syncForce, "force", false, "Overwrite locally modified pull files")
 	syncCmd.Flags().BoolVar(&syncDryRun, "dry-run", false, "Show what would happen without making changes")
 	syncCmd.Flags().BoolVar(&syncNoCheckRemote, "no-check-remote", false, "Skip remote version lookups (faster, cannot detect BEHIND/REMOTE_NEWER)")
 	rootCmd.AddCommand(syncCmd)
