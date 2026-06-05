@@ -87,7 +87,6 @@ type fakeProject struct {
 	title       string
 	description string
 	category    string
-	tags        []string
 	root        []*File
 	byID        map[string]*File
 	byPath      map[string]*File
