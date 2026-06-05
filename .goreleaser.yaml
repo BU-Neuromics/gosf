@@ -37,9 +37,4 @@ release:
     name: gosf
 
 changelog:
-  sort: asc
-  filters:
-    exclude:
-      - "^docs:"
-      - "^test:"
-      - "^ci:"
+  disable: true # release notes are sourced from CHANGELOG.md by the workflow
