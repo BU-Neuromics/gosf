@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.1] - 2026-06-05
+
+### Fixed
+
+- `gosf pull` returned 403 on files whose `links.download` URL is at `osf.io` (e.g. `https://osf.io/download/…/`) rather than directly at `files.osf.io`. The `CheckRedirect` policy stripped the `Authorization` header on any host change, including OSF-internal redirects (`osf.io` → `files.osf.io`). The policy now only strips auth when redirecting outside OSF infrastructure (`*.osf.io`), preserving credentials across OSF-internal hops while still preventing token leakage to third-party storage backends (S3, GCS).
+
 ## [1.0.0] - 2026-06-05
 
 Initial public release.
