@@ -35,8 +35,8 @@ Initial public release.
 - `--quiet` / `-q` to suppress progress bars and informational output
 - Progress bars on all file transfers via `schollz/progressbar`
 - Signal-aware context: Ctrl-C cancels in-flight HTTP requests and removes partial download files
-- Token priority chain: `--token` flag → `OSF_TOKEN` env var → config file → OS keychain
-- Plaintext token fallback in `~/.config/gosf/config.toml` for headless/HPC systems (via `--no-keychain`)
+- Token priority chain: `--token` flag → `OSF_TOKEN` env var → token file → OS keychain
+- Plaintext token fallback in `~/.config/gosf/token` (mode `0600`) for headless/HPC systems (via `--no-keychain`); kept separate from `config.toml` so the config file is safe to commit to version control
 - Token never printed in logs or error output
 
 **Distribution and CI**

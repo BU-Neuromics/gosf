@@ -29,7 +29,7 @@ var authLoginCmd = &cobra.Command{
 To create a token, visit: https://osf.io/settings/tokens/
 
 The token is stored in the OS keychain by default.
-On headless/HPC systems, use --no-keychain to write to the config file instead.`,
+On headless/HPC systems, use --no-keychain to write to a token file instead.`,
 	SilenceUsage: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		token, err := readToken()

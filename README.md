@@ -88,7 +88,7 @@ projects or to upload, you need a personal access token.
 |----------|--------|
 | 1 | `--token` flag |
 | 2 | `OSF_TOKEN` environment variable |
-| 3 | Config file (`~/.config/gosf/config.toml`) |
+| 3 | Token file (`~/.config/gosf/token`) |
 | 4 | OS keychain |
 
 If none are set, `gosf` runs unauthenticated (public projects only).

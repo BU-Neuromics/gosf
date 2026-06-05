@@ -2,18 +2,18 @@ package config
 
 import (
 	"fmt"
+	"os"
+	"runtime"
+	"strings"
 	"testing"
 
-	"github.com/spf13/viper"
 	"github.com/zalando/go-keyring"
 )
 
-// reset puts global state (viper + keyring + config dir) into a clean,
-// isolated state for a single test.
+// reset puts global state (keyring + config dir) into a clean, isolated state.
 func reset(t *testing.T) {
 	t.Helper()
-	viper.Reset()
-	keyring.MockInit() // in-memory keychain
+	keyring.MockInit()
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	t.Setenv("OSF_TOKEN", "")
 }
@@ -21,7 +21,12 @@ func reset(t *testing.T) {
 func TestLoadToken_FlagWins(t *testing.T) {
 	reset(t)
 	t.Setenv("OSF_TOKEN", "from-env")
-	viper.Set("token", "from-config")
+	if err := InitViper(); err != nil {
+		t.Fatalf("InitViper: %v", err)
+	}
+	if err := writeTokenToFile("from-file"); err != nil {
+		t.Fatalf("writeTokenToFile: %v", err)
+	}
 	_ = keyring.Set(keychainService, keychainUser, "from-keychain")
 
 	if got := LoadToken("from-flag"); got != "from-flag" {
@@ -29,10 +34,15 @@ func TestLoadToken_FlagWins(t *testing.T) {
 	}
 }
 
-func TestLoadToken_EnvBeatsConfigAndKeychain(t *testing.T) {
+func TestLoadToken_EnvBeatsFileAndKeychain(t *testing.T) {
 	reset(t)
 	t.Setenv("OSF_TOKEN", "from-env")
-	viper.Set("token", "from-config")
+	if err := InitViper(); err != nil {
+		t.Fatalf("InitViper: %v", err)
+	}
+	if err := writeTokenToFile("from-file"); err != nil {
+		t.Fatalf("writeTokenToFile: %v", err)
+	}
 	_ = keyring.Set(keychainService, keychainUser, "from-keychain")
 
 	if got := LoadToken(""); got != "from-env" {
@@ -40,13 +50,18 @@ func TestLoadToken_EnvBeatsConfigAndKeychain(t *testing.T) {
 	}
 }
 
-func TestLoadToken_ConfigBeatsKeychain(t *testing.T) {
+func TestLoadToken_FileBeatsKeychain(t *testing.T) {
 	reset(t)
-	viper.Set("token", "from-config")
+	if err := InitViper(); err != nil {
+		t.Fatalf("InitViper: %v", err)
+	}
+	if err := writeTokenToFile("from-file"); err != nil {
+		t.Fatalf("writeTokenToFile: %v", err)
+	}
 	_ = keyring.Set(keychainService, keychainUser, "from-keychain")
 
-	if got := LoadToken(""); got != "from-config" {
-		t.Errorf("LoadToken = %q, want from-config", got)
+	if got := LoadToken(""); got != "from-file" {
+		t.Errorf("LoadToken = %q, want from-file", got)
 	}
 }
 
@@ -92,13 +107,64 @@ func TestSaveToken_FileFallback(t *testing.T) {
 	if _, err := keyring.Get(keychainService, keychainUser); err == nil {
 		t.Error("expected keychain to be empty when --no-keychain used")
 	}
-	// LoadToken should find it via the config file.
-	viper.Reset()
-	if err := InitViper(); err != nil {
-		t.Fatalf("InitViper reload: %v", err)
+	// Token must be in the dedicated token file.
+	if got := readTokenFromFile(); got != "file-tok" {
+		t.Errorf("token file = %q, want file-tok", got)
 	}
+	// Token must NOT appear in config.toml.
+	cfgPath, err := configFilePath()
+	if err != nil {
+		t.Fatalf("configFilePath: %v", err)
+	}
+	data, _ := os.ReadFile(cfgPath)
+	if strings.Contains(string(data), "file-tok") {
+		t.Error("token must not appear in config.toml")
+	}
+	// LoadToken must find it.
 	if got := LoadToken(""); got != "file-tok" {
 		t.Errorf("LoadToken after file save = %q, want file-tok", got)
+	}
+}
+
+func TestSaveToken_TokenNotInViperConfig(t *testing.T) {
+	reset(t)
+	if err := InitViper(); err != nil {
+		t.Fatalf("InitViper: %v", err)
+	}
+	if err := SaveToken("secret-tok", true); err != nil {
+		t.Fatalf("SaveToken: %v", err)
+	}
+	cfgPath, err := configFilePath()
+	if err != nil {
+		t.Fatalf("configFilePath: %v", err)
+	}
+	data, _ := os.ReadFile(cfgPath)
+	if strings.Contains(string(data), "token") {
+		t.Errorf("'token' key must not appear in config.toml; got:\n%s", data)
+	}
+}
+
+func TestSaveToken_FilePermissions(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix permission bits not meaningful on Windows")
+	}
+	reset(t)
+	if err := InitViper(); err != nil {
+		t.Fatalf("InitViper: %v", err)
+	}
+	if err := SaveToken("perm-tok", true); err != nil {
+		t.Fatalf("SaveToken: %v", err)
+	}
+	p, err := tokenFilePath()
+	if err != nil {
+		t.Fatalf("tokenFilePath: %v", err)
+	}
+	info, err := os.Stat(p)
+	if err != nil {
+		t.Fatalf("stat token file: %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0600 {
+		t.Errorf("token file perms = %04o, want 0600", got)
 	}
 }
 
@@ -108,6 +174,9 @@ func TestDeleteToken_ClearsKeychainAndFile(t *testing.T) {
 		t.Fatalf("InitViper: %v", err)
 	}
 	_ = keyring.Set(keychainService, keychainUser, "from-keychain")
+	if err := writeTokenToFile("from-file"); err != nil {
+		t.Fatalf("writeTokenToFile: %v", err)
+	}
 
 	if err := DeleteToken(); err != nil {
 		t.Fatalf("DeleteToken: %v", err)
@@ -115,19 +184,29 @@ func TestDeleteToken_ClearsKeychainAndFile(t *testing.T) {
 	if _, err := keyring.Get(keychainService, keychainUser); err == nil {
 		t.Error("expected keychain token to be deleted")
 	}
+	if got := readTokenFromFile(); got != "" {
+		t.Errorf("token file = %q, want empty after delete", got)
+	}
 	if got := LoadToken(""); got != "" {
 		t.Errorf("LoadToken after delete = %q, want empty", got)
+	}
+}
+
+func TestDeleteToken_NoFileIsOK(t *testing.T) {
+	reset(t)
+	// No token file written — delete should still succeed.
+	if err := DeleteToken(); err != nil {
+		t.Errorf("DeleteToken with no token file = %v, want nil", err)
 	}
 }
 
 // TestDeleteToken_SurfacesKeychainError verifies that a real keychain failure
 // (not a benign "not found") is reported rather than silently swallowed.
 func TestDeleteToken_SurfacesKeychainError(t *testing.T) {
-	viper.Reset()
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	t.Setenv("OSF_TOKEN", "")
 	keyring.MockInitWithError(fmt.Errorf("keychain is locked"))
-	defer keyring.MockInit() // restore clean mock for later tests
+	defer keyring.MockInit()
 
 	if err := InitViper(); err != nil {
 		t.Fatalf("InitViper: %v", err)
@@ -151,9 +230,14 @@ func TestTokenSource(t *testing.T) {
 	}
 
 	reset(t)
-	viper.Set("token", "x")
-	if got := TokenSource(""); got != "config file" {
-		t.Errorf("config source = %q", got)
+	if err := InitViper(); err != nil {
+		t.Fatalf("InitViper: %v", err)
+	}
+	if err := writeTokenToFile("x"); err != nil {
+		t.Fatalf("writeTokenToFile: %v", err)
+	}
+	if got := TokenSource(""); got != "token file" {
+		t.Errorf("token file source = %q, want \"token file\"", got)
 	}
 
 	reset(t)
