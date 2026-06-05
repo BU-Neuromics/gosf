@@ -559,7 +559,7 @@ md5       = "%s"
 	}
 }
 
-func TestSync_PullNew_MissingFile(t *testing.T) {
+func TestSync_PullsMissingFile(t *testing.T) {
 	env := newTestEnv(t)
 	env.srv.AddProject("abc12", "Test Project")
 	f := env.srv.AddFile("abc12", "/data.csv", []byte("remote content"))
@@ -575,15 +575,77 @@ version   = 1
 md5       = "%s"
 `, f.VersionMD5(1)))
 
-	_, stderr, code := env.run("sync", "--pull-new", "--quiet")
+	_, stderr, code := env.run("sync", "--quiet")
 	if code != 0 {
-		t.Fatalf("sync --pull-new exit %d; stderr=%s", code, stderr)
+		t.Fatalf("sync exit %d; stderr=%s", code, stderr)
 	}
 	if !env.fileExists("data.csv") {
 		t.Fatal("data.csv not downloaded")
 	}
 	if got := env.readFile("data.csv"); got != "remote content" {
 		t.Errorf("content = %q", got)
+	}
+}
+
+func TestSync_PullsAndPushes(t *testing.T) {
+	env := newTestEnv(t)
+	env.srv.AddProject("abc12", "Test Project")
+	f := env.srv.AddFile("abc12", "/pull-me.csv", []byte("remote content"))
+
+	// push-eligible: AHEAD_OF_MANIFEST (local differs from pinned MD5)
+	env.writeFile("push-me.csv", "modified locally")
+	// pull-eligible: MISSING (file doesn't exist locally)
+	env.writeFile("gosf.toml", fmt.Sprintf(`[project]
+id = "abc12"
+
+[[files]]
+local     = "push-me.csv"
+remote    = "/push-me.csv"
+direction = "push"
+version   = 1
+md5       = "deadbeefdeadbeef"
+
+[[files]]
+local     = "pull-me.csv"
+remote    = "/pull-me.csv"
+direction = "pull"
+version   = 1
+md5       = "%s"
+`, f.VersionMD5(1)))
+
+	_, stderr, code := env.run("sync", "--quiet", "--no-check-remote")
+	if code != 0 {
+		t.Fatalf("sync exit %d; stderr=%s", code, stderr)
+	}
+
+	// push happened
+	if uploads := env.srv.Uploads(); len(uploads) == 0 {
+		t.Error("expected push upload, got none")
+	} else if string(uploads[0].Content) != "modified locally" {
+		t.Errorf("upload content = %q", uploads[0].Content)
+	}
+
+	// pull happened
+	if !env.fileExists("pull-me.csv") {
+		t.Error("pull-me.csv not downloaded")
+	}
+	if got := env.readFile("pull-me.csv"); got != "remote content" {
+		t.Errorf("pull-me.csv content = %q", got)
+	}
+}
+
+func TestSync_NoProjectID(t *testing.T) {
+	env := newTestEnv(t)
+	env.writeFile("gosf.toml", `[project]
+id = ""
+`)
+
+	_, stderr, code := env.run("sync")
+	if code == 0 {
+		t.Fatal("expected non-zero exit when no project id configured")
+	}
+	if !strings.Contains(stderr, "gosf init") {
+		t.Errorf("expected 'gosf init' in stderr; got %q", stderr)
 	}
 }
 
