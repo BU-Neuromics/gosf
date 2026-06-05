@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- `gosf mv <src> <dest>` — rename or move a file/folder within or across OSF projects; uses Waterbutler rename action when src/dest share the same folder, move action otherwise; `--conflict=warn|replace|keep`
+- `gosf cp <src> <dest>` — copy a file/folder within or across OSF projects; `--conflict=keep|replace|warn` (default: keep)
+- `gosf mkdir <project>:<path>` — create a folder in OSF Storage; `--dry-run`
+- `gosf set <project>` — update node title, description, category, and/or tags via `PATCH /v2/nodes/{id}/`; only supplied flags are sent; `--output=json` returns the updated node
+
 ## [1.0.1] - 2026-06-05
 
 ### Fixed

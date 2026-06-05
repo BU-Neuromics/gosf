@@ -83,11 +83,30 @@ func (f *File) versionContent(ver int) []byte {
 }
 
 type fakeProject struct {
-	id     string
-	title  string
-	root   []*File
-	byID   map[string]*File
-	byPath map[string]*File
+	id          string
+	title       string
+	description string
+	category    string
+	tags        []string
+	root        []*File
+	byID        map[string]*File
+	byPath      map[string]*File
+}
+
+// MoveRecord describes one move/copy/rename action received by the server.
+type MoveRecord struct {
+	FileID   string
+	Action   string // "move", "copy", or "rename"
+	DestPath string // for move/copy: destination folder
+	NewName  string // new filename
+	Resource string // cross-project destination node
+	Conflict string
+}
+
+// NodePatchRecord describes one PATCH /nodes/{id}/ request.
+type NodePatchRecord struct {
+	NodeID string
+	Attrs  map[string]any
 }
 
 // Server is a combined fake OSF metadata + Waterbutler HTTP server.
@@ -96,7 +115,10 @@ type Server struct {
 	projects map[string]*fakeProject
 	allFiles map[string]*File // all files across projects, keyed by ID
 	uploads  []UploadRecord
-	deletes  []string // file IDs that received a DELETE request
+	deletes  []string          // file IDs that received a DELETE request
+	moves    []MoveRecord      // move/copy/rename actions received
+	patches  []NodePatchRecord // PATCH /nodes/{id}/ requests received
+	folders  []string          // folder paths created via kind=folder PUT
 	nextID   int
 	mu       sync.Mutex
 }
@@ -203,6 +225,44 @@ func (s *Server) Deletes() []string {
 	return result
 }
 
+// Moves returns a copy of all recorded move/copy/rename actions.
+func (s *Server) Moves() []MoveRecord {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	result := make([]MoveRecord, len(s.moves))
+	copy(result, s.moves)
+	return result
+}
+
+// NodePatches returns a copy of all recorded PATCH /nodes/{id}/ requests.
+func (s *Server) NodePatches() []NodePatchRecord {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	result := make([]NodePatchRecord, len(s.patches))
+	copy(result, s.patches)
+	return result
+}
+
+// Folders returns a copy of all folder paths created via kind=folder PUT.
+func (s *Server) Folders() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	result := make([]string, len(s.folders))
+	copy(result, s.folders)
+	return result
+}
+
+// GetProject returns the fakeProject for id, or nil.
+func (s *Server) GetProject(id string) (title, description, category string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	proj := s.projects[id]
+	if proj == nil {
+		return "", "", ""
+	}
+	return proj.title, proj.description, proj.category
+}
+
 // GetFile returns the File at filePath in projectID, or nil.
 func (s *Server) GetFile(projectID, filePath string) *File {
 	s.mu.Lock()
@@ -223,12 +283,18 @@ func (s *Server) handler(w http.ResponseWriter, r *http.Request) {
 		s.handleUserNodes(w, r)
 	case r.Method == http.MethodGet && strings.HasPrefix(p, "/v2/nodes/") && strings.Contains(p, "/files/osfstorage/"):
 		s.handleFileList(w, r)
-	case r.Method == http.MethodGet && strings.HasPrefix(p, "/v2/nodes/"):
-		s.handleNode(w, r)
+	case (r.Method == http.MethodGet || r.Method == http.MethodPatch) && strings.HasPrefix(p, "/v2/nodes/"):
+		if r.Method == http.MethodPatch {
+			s.handleNodePatch(w, r)
+		} else {
+			s.handleNode(w, r)
+		}
 	case r.Method == http.MethodGet && strings.HasPrefix(p, "/v2/files/") && strings.HasSuffix(p, "/versions/"):
 		s.handleVersions(w, r)
-	case r.Method == http.MethodGet && strings.HasPrefix(p, "/v1/files/") && !strings.HasSuffix(p, "/upload") && !strings.HasSuffix(p, "/delete"):
+	case r.Method == http.MethodGet && strings.HasPrefix(p, "/v1/files/") && !strings.HasSuffix(p, "/upload") && !strings.HasSuffix(p, "/delete") && !strings.HasSuffix(p, "/move"):
 		s.handleDownload(w, r)
+	case r.Method == http.MethodPost && strings.HasPrefix(p, "/v1/files/") && strings.HasSuffix(p, "/move"):
+		s.handleMoveAction(w, r)
 	case r.Method == http.MethodPut && strings.HasPrefix(p, "/v1/resources/"):
 		s.handleNewUpload(w, r)
 	case r.Method == http.MethodPut && strings.HasPrefix(p, "/v1/files/") && strings.HasSuffix(p, "/upload"):
@@ -279,6 +345,7 @@ func (s *Server) fileItemJSON(nodeID string, f *File) map[string]any {
 			"download": fmt.Sprintf("%s/v1/files/%s", base, f.ID),
 			"upload":   fmt.Sprintf("%s/v1/files/%s/upload", base, f.ID),
 			"delete":   fmt.Sprintf("%s/v1/files/%s/delete", base, f.ID),
+			"move":     fmt.Sprintf("%s/v1/files/%s/move", base, f.ID),
 		},
 		"relationships": map[string]any{
 			"files": map[string]any{
@@ -308,11 +375,11 @@ func (s *Server) handleNode(w http.ResponseWriter, r *http.Request) {
 			"id": proj.id,
 			"attributes": map[string]any{
 				"title":         proj.title,
-				"description":   "",
+				"description":   proj.description,
 				"date_created":  "2024-01-01T00:00:00",
 				"date_modified": "2024-01-01T00:00:00",
 				"public":        true,
-				"category":      "project",
+				"category":      proj.category,
 			},
 		},
 	})
@@ -431,7 +498,7 @@ func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleNewUpload(w http.ResponseWriter, r *http.Request) {
-	// /v1/resources/{nodeID}/providers/osfstorage/{parentPath}?name={filename}&kind=file
+	// /v1/resources/{nodeID}/providers/osfstorage/{parentPath}?name={name}&kind=file|folder
 	rest := strings.TrimPrefix(r.URL.Path, "/v1/resources/")
 	const provSuffix = "/providers/osfstorage/"
 	slashIdx := strings.Index(rest, provSuffix)
@@ -442,16 +509,14 @@ func (s *Server) handleNewUpload(w http.ResponseWriter, r *http.Request) {
 	nodeID := rest[:slashIdx]
 	pathPart := rest[slashIdx+len(provSuffix):]
 
-	filename := r.URL.Query().Get("name")
-	if filename == "" {
+	name := r.URL.Query().Get("name")
+	if name == "" {
 		http.Error(w, "missing name param", http.StatusBadRequest)
 		return
 	}
-
-	content, err := io.ReadAll(r.Body)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
+	kind := r.URL.Query().Get("kind")
+	if kind == "" {
+		kind = "file"
 	}
 
 	var parentPath string
@@ -462,9 +527,30 @@ func (s *Server) handleNewUpload(w http.ResponseWriter, r *http.Request) {
 	}
 	fullPath := parentPath
 	if fullPath == "/" {
-		fullPath = "/" + filename
+		fullPath = "/" + name
 	} else {
-		fullPath = fullPath + "/" + filename
+		fullPath = fullPath + "/" + name
+	}
+
+	if kind == "folder" {
+		s.mu.Lock()
+		if proj, ok := s.projects[nodeID]; ok {
+			s.ensureFolderLocked(proj, fullPath)
+		}
+		s.folders = append(s.folders, fullPath)
+		s.mu.Unlock()
+		writeJSON(w, http.StatusCreated, map[string]any{
+			"data": map[string]any{
+				"attributes": map[string]any{"name": name, "kind": "folder"},
+			},
+		})
+		return
+	}
+
+	content, err := io.ReadAll(r.Body)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
 	}
 
 	h := md5.Sum(content)
@@ -475,7 +561,7 @@ func (s *Server) handleNewUpload(w http.ResponseWriter, r *http.Request) {
 		s.nextID++
 		f := &File{
 			ID:       fmt.Sprintf("f%d", s.nextID),
-			Name:     filename,
+			Name:     name,
 			FilePath: fullPath,
 			Versions: []fileVer{{num: 1, content: content, md5: md5Str}},
 		}
@@ -566,6 +652,103 @@ func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
 	s.deletes = append(s.deletes, fileID)
 	s.mu.Unlock()
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) handleMoveAction(w http.ResponseWriter, r *http.Request) {
+	// POST /v1/files/{fileID}/move
+	fileID := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/v1/files/"), "/move")
+
+	var body map[string]any
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	action, _ := body["action"].(string)
+	destPath, _ := body["path"].(string)
+	newName, _ := body["rename"].(string)
+	resource, _ := body["resource"].(string)
+	conflict, _ := body["conflict"].(string)
+
+	rec := MoveRecord{
+		FileID:   fileID,
+		Action:   action,
+		DestPath: destPath,
+		NewName:  newName,
+		Resource: resource,
+		Conflict: conflict,
+	}
+
+	s.mu.Lock()
+	s.moves = append(s.moves, rec)
+	f := s.allFiles[fileID]
+	s.mu.Unlock()
+
+	if f == nil {
+		http.NotFound(w, r)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"data": map[string]any{
+			"attributes": map[string]any{
+				"name": func() string {
+					if newName != "" {
+						return newName
+					}
+					return f.Name
+				}(),
+				"kind": "file",
+			},
+		},
+	})
+}
+
+func (s *Server) handleNodePatch(w http.ResponseWriter, r *http.Request) {
+	// PATCH /v2/nodes/{nodeID}/
+	nodeID := extractNodeID(r.URL.Path)
+
+	var body map[string]any
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	data, _ := body["data"].(map[string]any)
+	attrs, _ := data["attributes"].(map[string]any)
+
+	s.mu.Lock()
+	proj, ok := s.projects[nodeID]
+	if !ok {
+		s.mu.Unlock()
+		http.NotFound(w, r)
+		return
+	}
+	if v, ok := attrs["title"].(string); ok {
+		proj.title = v
+	}
+	if v, ok := attrs["description"].(string); ok {
+		proj.description = v
+	}
+	if v, ok := attrs["category"].(string); ok {
+		proj.category = v
+	}
+	s.patches = append(s.patches, NodePatchRecord{NodeID: nodeID, Attrs: attrs})
+	title, desc, cat := proj.title, proj.description, proj.category
+	s.mu.Unlock()
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"data": map[string]any{
+			"id": nodeID,
+			"attributes": map[string]any{
+				"title":         title,
+				"description":   desc,
+				"date_created":  "2024-01-01T00:00:00",
+				"date_modified": "2024-01-01T00:00:00",
+				"public":        true,
+				"category":      cat,
+			},
+		},
+	})
 }
 
 // --- URL parsing helpers ---

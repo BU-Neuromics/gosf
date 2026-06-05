@@ -105,3 +105,24 @@ type VersionsResult struct {
 func NewVersionsResult() *VersionsResult {
 	return &VersionsResult{Versions: []VersionItem{}}
 }
+
+// MvResult is emitted by `gosf mv --output=json`.
+type MvResult struct {
+	Src    string `json:"src"`
+	Dest   string `json:"dest"`
+	DryRun bool   `json:"dry_run"`
+}
+
+// CpResult is emitted by `gosf cp --output=json`.
+type CpResult struct {
+	Src    string `json:"src"`
+	Dest   string `json:"dest"`
+	DryRun bool   `json:"dry_run"`
+}
+
+// MkdirResult is emitted by `gosf mkdir --output=json`.
+type MkdirResult struct {
+	Path    string `json:"path"`
+	Created bool   `json:"created"`
+	DryRun  bool   `json:"dry_run"`
+}

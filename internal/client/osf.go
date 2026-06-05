@@ -1,6 +1,7 @@
 package client
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -290,6 +291,77 @@ func (v FileVersion) Contributor() string {
 		return u.Attributes.FullName
 	}
 	return u.ID
+}
+
+// UpdateNodeAttrs holds the fields that may be updated via PATCH /nodes/{id}/.
+// A nil pointer means "do not change this field".
+type UpdateNodeAttrs struct {
+	Title       *string
+	Description *string
+	Category    *string
+	Tags        []string // nil = don't update; non-nil replaces the full list
+}
+
+// UpdateNode patches writable metadata fields on an OSF project or component.
+// Only non-nil fields in attrs are included in the PATCH body.
+func (c *OSFClient) UpdateNode(ctx context.Context, nodeID string, attrs UpdateNodeAttrs) (*Node, error) {
+	attributes := map[string]any{}
+	if attrs.Title != nil {
+		attributes["title"] = *attrs.Title
+	}
+	if attrs.Description != nil {
+		attributes["description"] = *attrs.Description
+	}
+	if attrs.Category != nil {
+		attributes["category"] = *attrs.Category
+	}
+	if attrs.Tags != nil {
+		attributes["tags"] = attrs.Tags
+	}
+	if len(attributes) == 0 {
+		return nil, fmt.Errorf("no fields to update")
+	}
+
+	payload := map[string]any{
+		"data": map[string]any{
+			"id":         nodeID,
+			"type":       "nodes",
+			"attributes": attributes,
+		},
+	}
+	b, err := json.Marshal(payload)
+	if err != nil {
+		return nil, err
+	}
+
+	url := fmt.Sprintf("%s/nodes/%s/", c.baseURL, nodeID)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPatch, url, bytes.NewReader(b))
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/vnd.api+json")
+	req.Header.Set("Accept", "application/vnd.api+json")
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, parseAPIError(resp.StatusCode, body)
+	}
+
+	var result struct {
+		Data Node `json:"data"`
+	}
+	if err := json.Unmarshal(body, &result); err != nil {
+		return nil, err
+	}
+	return &result.Data, nil
 }
 
 // GetFileVersions returns all versions of a file, newest-first, with embedded user info.

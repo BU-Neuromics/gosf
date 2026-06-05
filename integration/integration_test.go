@@ -914,3 +914,258 @@ func TestOpen_JSON_File(t *testing.T) {
 		t.Errorf("url = %v, want %q", result["url"], want)
 	}
 }
+
+// ---- Mkdir ----
+
+func TestMkdir_Basic(t *testing.T) {
+	env := newTestEnv(t)
+	env.srv.AddProject("abc12", "Test Project")
+
+	_, stderr, code := env.run("mkdir", "abc12:/results/2026")
+	if code != 0 {
+		t.Fatalf("exit %d; stderr=%s", code, stderr)
+	}
+	flds := env.srv.Folders()
+	if len(flds) == 0 {
+		t.Fatal("expected a folder to be created")
+	}
+	if flds[0] != "/results/2026" {
+		t.Errorf("folder path = %q, want /results/2026", flds[0])
+	}
+}
+
+func TestMkdir_JSON(t *testing.T) {
+	env := newTestEnv(t)
+	env.srv.AddProject("abc12", "Test Project")
+
+	stdout, _, code := env.run("mkdir", "abc12:/data/raw", "--output=json")
+	if code != 0 {
+		t.Fatalf("exit %d; stdout=%s", code, stdout)
+	}
+	var result map[string]any
+	if err := json.Unmarshal([]byte(stdout), &result); err != nil {
+		t.Fatalf("parse JSON: %v\n%s", err, stdout)
+	}
+	if result["path"] != "/data/raw" {
+		t.Errorf("path = %v, want /data/raw", result["path"])
+	}
+	if result["created"] != true {
+		t.Errorf("created = %v, want true", result["created"])
+	}
+}
+
+func TestMkdir_DryRun(t *testing.T) {
+	env := newTestEnv(t)
+	env.srv.AddProject("abc12", "Test Project")
+
+	_, _, code := env.run("mkdir", "abc12:/dry/folder", "--dry-run")
+	if code != 0 {
+		t.Fatalf("unexpected exit %d", code)
+	}
+	if len(env.srv.Folders()) != 0 {
+		t.Error("dry-run should not create folder")
+	}
+}
+
+// ---- Set ----
+
+func TestSet_Description(t *testing.T) {
+	env := newTestEnv(t)
+	env.srv.AddProject("abc12", "My Project")
+
+	_, stderr, code := env.run("set", "abc12", "--description", "Updated desc")
+	if code != 0 {
+		t.Fatalf("exit %d; stderr=%s", code, stderr)
+	}
+	patches := env.srv.NodePatches()
+	if len(patches) == 0 {
+		t.Fatal("expected a PATCH request")
+	}
+	if patches[0].Attrs["description"] != "Updated desc" {
+		t.Errorf("description = %v", patches[0].Attrs["description"])
+	}
+}
+
+func TestSet_JSON(t *testing.T) {
+	env := newTestEnv(t)
+	env.srv.AddProject("abc12", "My Project")
+
+	stdout, _, code := env.run("set", "abc12", "--title", "New Title", "--output=json")
+	if code != 0 {
+		t.Fatalf("exit %d; stdout=%s", code, stdout)
+	}
+	var result map[string]any
+	if err := json.Unmarshal([]byte(stdout), &result); err != nil {
+		t.Fatalf("parse JSON: %v\n%s", err, stdout)
+	}
+	if result["id"] != "abc12" {
+		t.Errorf("id = %v, want abc12", result["id"])
+	}
+}
+
+func TestSet_NoFlags(t *testing.T) {
+	env := newTestEnv(t)
+	env.srv.AddProject("abc12", "My Project")
+
+	_, _, code := env.run("set", "abc12")
+	if code == 0 {
+		t.Fatal("expected non-zero exit when no flags given")
+	}
+}
+
+func TestSet_MultipleFields(t *testing.T) {
+	env := newTestEnv(t)
+	env.srv.AddProject("abc12", "My Project")
+
+	_, stderr, code := env.run("set", "abc12",
+		"--title", "Updated",
+		"--category", "analysis",
+		"--tags", "processed,qc-passed",
+	)
+	if code != 0 {
+		t.Fatalf("exit %d; stderr=%s", code, stderr)
+	}
+	patches := env.srv.NodePatches()
+	if len(patches) == 0 {
+		t.Fatal("expected a PATCH request")
+	}
+	attrs := patches[0].Attrs
+	if attrs["title"] != "Updated" {
+		t.Errorf("title = %v", attrs["title"])
+	}
+	if attrs["category"] != "analysis" {
+		t.Errorf("category = %v", attrs["category"])
+	}
+	tags, _ := attrs["tags"].([]any)
+	if len(tags) != 2 {
+		t.Errorf("tags = %v, want 2 elements", tags)
+	}
+}
+
+// ---- Mv ----
+
+func TestMv_Rename(t *testing.T) {
+	env := newTestEnv(t)
+	env.srv.AddProject("abc12", "Test Project")
+	env.srv.AddFile("abc12", "/data/counts.h5", []byte("data"))
+
+	_, stderr, code := env.run("mv", "abc12:/data/counts.h5", "abc12:/data/counts_v2.h5")
+	if code != 0 {
+		t.Fatalf("exit %d; stderr=%s", code, stderr)
+	}
+	moves := env.srv.Moves()
+	if len(moves) == 0 {
+		t.Fatal("expected a move action")
+	}
+	if moves[0].Action != "rename" {
+		t.Errorf("action = %q, want rename", moves[0].Action)
+	}
+	if moves[0].NewName != "counts_v2.h5" {
+		t.Errorf("rename = %q, want counts_v2.h5", moves[0].NewName)
+	}
+}
+
+func TestMv_Move(t *testing.T) {
+	env := newTestEnv(t)
+	env.srv.AddProject("abc12", "Test Project")
+	env.srv.AddFile("abc12", "/data/counts.h5", []byte("data"))
+
+	_, stderr, code := env.run("mv", "abc12:/data/counts.h5", "abc12:/processed/counts.h5")
+	if code != 0 {
+		t.Fatalf("exit %d; stderr=%s", code, stderr)
+	}
+	moves := env.srv.Moves()
+	if len(moves) == 0 {
+		t.Fatal("expected a move action")
+	}
+	if moves[0].Action != "move" {
+		t.Errorf("action = %q, want move", moves[0].Action)
+	}
+	if moves[0].DestPath != "/processed" {
+		t.Errorf("path = %q, want /processed", moves[0].DestPath)
+	}
+}
+
+func TestMv_DryRun(t *testing.T) {
+	env := newTestEnv(t)
+	env.srv.AddProject("abc12", "Test Project")
+	env.srv.AddFile("abc12", "/data/counts.h5", []byte("data"))
+
+	_, _, code := env.run("mv", "abc12:/data/counts.h5", "abc12:/processed/counts.h5", "--dry-run")
+	if code != 0 {
+		t.Fatalf("unexpected exit %d", code)
+	}
+	if len(env.srv.Moves()) != 0 {
+		t.Error("dry-run should not move any files")
+	}
+}
+
+func TestMv_JSON(t *testing.T) {
+	env := newTestEnv(t)
+	env.srv.AddProject("abc12", "Test Project")
+	env.srv.AddFile("abc12", "/data/counts.h5", []byte("data"))
+
+	stdout, _, code := env.run("mv", "abc12:/data/counts.h5", "abc12:/processed/counts.h5", "--output=json")
+	if code != 0 {
+		t.Fatalf("exit %d; stdout=%s", code, stdout)
+	}
+	var result map[string]any
+	if err := json.Unmarshal([]byte(stdout), &result); err != nil {
+		t.Fatalf("parse JSON: %v\n%s", err, stdout)
+	}
+	if result["src"] == nil || result["dest"] == nil {
+		t.Errorf("expected src and dest in result: %v", result)
+	}
+}
+
+// ---- Cp ----
+
+func TestCp_Basic(t *testing.T) {
+	env := newTestEnv(t)
+	env.srv.AddProject("abc12", "Test Project")
+	env.srv.AddFile("abc12", "/data/counts.h5", []byte("data"))
+
+	_, stderr, code := env.run("cp", "abc12:/data/counts.h5", "abc12:/backup/counts.h5")
+	if code != 0 {
+		t.Fatalf("exit %d; stderr=%s", code, stderr)
+	}
+	moves := env.srv.Moves()
+	if len(moves) == 0 {
+		t.Fatal("expected a copy action")
+	}
+	if moves[0].Action != "copy" {
+		t.Errorf("action = %q, want copy", moves[0].Action)
+	}
+}
+
+func TestCp_DryRun(t *testing.T) {
+	env := newTestEnv(t)
+	env.srv.AddProject("abc12", "Test Project")
+	env.srv.AddFile("abc12", "/data/counts.h5", []byte("data"))
+
+	_, _, code := env.run("cp", "abc12:/data/counts.h5", "abc12:/backup/counts.h5", "--dry-run")
+	if code != 0 {
+		t.Fatalf("unexpected exit %d", code)
+	}
+	if len(env.srv.Moves()) != 0 {
+		t.Error("dry-run should not copy any files")
+	}
+}
+
+func TestCp_JSON(t *testing.T) {
+	env := newTestEnv(t)
+	env.srv.AddProject("abc12", "Test Project")
+	env.srv.AddFile("abc12", "/data/counts.h5", []byte("data"))
+
+	stdout, _, code := env.run("cp", "abc12:/data/counts.h5", "abc12:/backup/counts.h5", "--output=json")
+	if code != 0 {
+		t.Fatalf("exit %d; stdout=%s", code, stdout)
+	}
+	var result map[string]any
+	if err := json.Unmarshal([]byte(stdout), &result); err != nil {
+		t.Fatalf("parse JSON: %v\n%s", err, stdout)
+	}
+	if result["src"] == nil || result["dest"] == nil {
+		t.Errorf("expected src and dest in result: %v", result)
+	}
+}
