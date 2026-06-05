@@ -17,18 +17,22 @@ import (
 )
 
 var (
-	pushDryRun   bool
-	pushConflict string
+	pushDryRun        bool
+	pushConflict      string
+	pushNoTrack       bool
+	pushNoCheckRemote bool
 )
 
 var pushCmd = &cobra.Command{
-	Use:   "push <src> <project>:<path>",
+	Use:   "push [<src> <project>:<path>]",
 	Short: "Upload a file or directory to an OSF project",
 	Long: `Upload a local file or directory to an OSF project.
 
-<path> must include a filename when uploading a single file.
-When <src> is a directory, all files in it are uploaded under <path>,
-preserving the relative directory structure.
+With no arguments, pushes all tracked files with direction=push or direction=both
+from gosf.toml. Requires gosf.toml with [project].id set (run 'gosf init').
+
+With arguments, uploads the specified local file or directory and records it
+in gosf.toml (unless --no-track is set).
 
 Conflict behaviour (--conflict):
   skip      (default) Skip files that already exist at the destination.
@@ -36,13 +40,23 @@ Conflict behaviour (--conflict):
   rename              Append _1, _2, … to find a free name.
 
 Examples:
+  gosf push                               # push all manifest push-eligible files
   gosf push results.csv abc12:/data/results.csv
   gosf push ./results/  abc12:/data/
   gosf push data.csv    abc12:/data/data.csv --conflict=overwrite`,
-	Args:         cobra.ExactArgs(2),
+	Args:         cobra.RangeArgs(0, 2),
 	SilenceUsage: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if len(args) == 0 {
+			return runBarePush(cmd)
+		}
+		if len(args) == 1 {
+			return fmt.Errorf("usage: gosf push <src> <project>:<path>")
+		}
+
 		src := args[0]
+		src = strings.TrimRight(src, "/"+string(filepath.Separator))
+
 		target, err := resolver.ParseTarget(args[1])
 		if err != nil {
 			return err
@@ -66,14 +80,18 @@ Examples:
 			return fmt.Errorf("source: %w", err)
 		}
 
-		// Load gosf.toml if present (optional — push works without it).
+		// Load existing gosf.toml; if absent and tracking enabled, prepare to create one.
 		var mf *manifest.Manifest
 		var mfPath string
-		if mfPathFound, _, findErr := manifest.FindManifest(); findErr == nil {
+		mfPathFound, _, findErr := manifest.FindManifest()
+		if findErr == nil {
 			if loaded, loadErr := manifest.Load(mfPathFound); loadErr == nil {
 				mf = loaded
 				mfPath = mfPathFound
 			}
+		} else if manifest.IsNotFound(findErr) && !pushNoTrack {
+			mfPath = "gosf.toml"
+			mf = &manifest.Manifest{Project: manifest.ProjectConfig{ID: target.NodeID}}
 		}
 
 		jsonMode := flagOutput == "json"
@@ -88,6 +106,8 @@ Examples:
 			conflict:     pushConflict,
 			manifest:     mf,
 			manifestPath: mfPath,
+			track:        !pushNoTrack && mf != nil,
+			nodeID:       target.NodeID,
 		}
 
 		if srcInfo.IsDir() {
@@ -97,6 +117,12 @@ Examples:
 		}
 		if err != nil {
 			return err
+		}
+
+		if s.manifestDirty && !s.dryRun {
+			if err := manifest.Save(s.manifest, s.manifestPath); err != nil {
+				return fmt.Errorf("updating gosf.toml: %w", err)
+			}
 		}
 
 		if jsonMode {
@@ -109,18 +135,99 @@ Examples:
 	},
 }
 
+// runBarePush pushes all push-eligible manifest entries.
+func runBarePush(cmd *cobra.Command) error {
+	manifestPath, repoRoot, err := manifest.FindManifest()
+	if manifest.IsNotFound(err) {
+		return fmt.Errorf("no gosf.toml found — run: gosf init <project-id>")
+	}
+	if err != nil {
+		return err
+	}
+
+	m, err := manifest.Load(manifestPath)
+	if err != nil {
+		return err
+	}
+	if m.Project.ID == "" {
+		return fmt.Errorf("no project configured — run: gosf init <project-id>")
+	}
+
+	token := config.LoadToken(flagToken)
+	if token == "" {
+		return fmt.Errorf("push requires authentication — run 'gosf auth login' or set OSF_TOKEN")
+	}
+
+	osfClient := client.New(token)
+	wb := client.NewWaterbutler(token)
+	res := resolver.New(osfClient)
+
+	jsonMode := flagOutput == "json"
+	quiet := flagQuiet || jsonMode
+	jsonResults := make([]output.SyncItem, 0)
+	manifestChanged := false
+
+	for i := range m.Files {
+		entry := &m.Files[i]
+		if entry.Direction != "push" && entry.Direction != "both" {
+			continue
+		}
+		proj := entry.ResolveProject(m.Project.ID)
+		localAbs := filepath.Join(repoRoot, entry.Local)
+
+		localMD5, err := computeLocalMD5(localAbs)
+		if err != nil {
+			return fmt.Errorf("computing MD5 for %s: %w", entry.Local, err)
+		}
+
+		var remoteVersions []manifest.RemoteVersion
+		if !pushNoCheckRemote && entry.Version > 0 {
+			if item, resolveErr := res.Resolve(cmd.Context(), proj, entry.Remote); resolveErr == nil {
+				if fvs, fetchErr := osfClient.GetFileVersions(cmd.Context(), item.ID); fetchErr == nil {
+					remoteVersions = fileVersionsToRemote(fvs)
+				}
+			}
+		}
+
+		state := manifest.ClassifyFile(*entry, localMD5, remoteVersions, pushNoCheckRemote)
+		action, changed, err := processPushEntry(cmd.Context(), entry, proj, localAbs, state, res, wb, osfClient, quiet, jsonMode, pushDryRun)
+		if err != nil {
+			return err
+		}
+		if changed {
+			manifestChanged = true
+		}
+		if jsonMode {
+			jsonResults = append(jsonResults, makeSyncItem(entry, state, action, remoteVersions))
+		}
+	}
+
+	if manifestChanged && !pushDryRun {
+		if err := manifest.Save(m, manifestPath); err != nil {
+			return fmt.Errorf("saving manifest: %w", err)
+		}
+	}
+	if jsonMode {
+		return output.PrintJSON(os.Stdout, jsonResults)
+	}
+	return nil
+}
+
 // pushSession carries the shared state for one push invocation.
 type pushSession struct {
-	ctx          context.Context
-	res          *resolver.Resolver
-	wb           *client.WaterbutlerClient
-	result       *output.PushResult
-	jsonMode     bool
-	quiet        bool
-	dryRun       bool
-	conflict     string
-	manifest     *manifest.Manifest // nil if no gosf.toml found
-	manifestPath string             // path to gosf.toml
+	ctx           context.Context
+	res           *resolver.Resolver
+	wb            *client.WaterbutlerClient
+	result        *output.PushResult
+	jsonMode      bool
+	quiet         bool
+	dryRun        bool
+	conflict      string
+	manifest      *manifest.Manifest
+	manifestPath  string
+	track         bool
+	nodeID        string
+	manifestDirty bool
 }
 
 // file uploads a single local file to an OSF destination path.
@@ -157,6 +264,16 @@ func (s *pushSession) file(srcPath, nodeID, destPath string) error {
 	}
 	destFull := strings.TrimRight(parentDir, "/") + "/" + plan.name
 
+	// Refuse if a different local path already tracks this remote destination.
+	if s.track && s.manifest != nil && plan.action != "skip" {
+		if idx := findEntryByRemote(s.manifest, nodeID, destFull); idx >= 0 {
+			if s.manifest.Files[idx].Local != srcPath {
+				return fmt.Errorf("push refused: %s:%s is already tracked to %q — edit gosf.toml to change",
+					nodeID, destFull, s.manifest.Files[idx].Local)
+			}
+		}
+	}
+
 	switch {
 	case plan.action == "skip":
 		s.result.Add(destFull, "skip")
@@ -185,21 +302,32 @@ func (s *pushSession) file(srcPath, nodeID, destPath string) error {
 	}
 	s.result.Add(destFull, plan.action)
 
-	// Update gosf.toml if this file has a manifest entry with direction push or both.
-	if s.manifest != nil && !s.dryRun && uploadResult.Version > 0 {
+	// Auto-track: create or update the manifest entry.
+	if s.track && s.manifest != nil && uploadResult.Version > 0 {
 		if idx := findEntryByLocal(s.manifest, srcPath); idx >= 0 {
-			entry := &s.manifest.Files[idx]
-			if entry.Direction == "push" || entry.Direction == "both" {
-				oldVer := entry.Version
-				entry.Version = uploadResult.Version
-				entry.MD5 = uploadResult.MD5
-				if err := manifest.Save(s.manifest, s.manifestPath); err != nil {
-					return fmt.Errorf("updating gosf.toml: %w", err)
-				}
-				if !s.quiet {
-					fmt.Fprintf(os.Stderr, "Updated gosf.toml: %s  v%d → v%d\n", srcPath, oldVer, entry.Version)
-				}
+			e := &s.manifest.Files[idx]
+			e.Version = uploadResult.Version
+			e.MD5 = uploadResult.MD5
+			s.manifestDirty = true
+		} else if idx := findEntryByRemote(s.manifest, nodeID, destFull); idx >= 0 {
+			e := &s.manifest.Files[idx]
+			e.Version = uploadResult.Version
+			e.MD5 = uploadResult.MD5
+			s.manifestDirty = true
+		} else {
+			entryProject := ""
+			if nodeID != s.manifest.Project.ID {
+				entryProject = nodeID
 			}
+			s.manifest.Files = append(s.manifest.Files, manifest.Entry{
+				Local:     srcPath,
+				Remote:    destFull,
+				Direction: "push",
+				Version:   uploadResult.Version,
+				MD5:       uploadResult.MD5,
+				Project:   entryProject,
+			})
+			s.manifestDirty = true
 		}
 	}
 	return nil
@@ -319,5 +447,7 @@ func findFreeName(filename string, siblings []client.FileItem) string {
 func init() {
 	pushCmd.Flags().BoolVar(&pushDryRun, "dry-run", false, "Show what would be uploaded without uploading")
 	pushCmd.Flags().StringVar(&pushConflict, "conflict", "skip", "Conflict resolution: skip, overwrite, or rename")
+	pushCmd.Flags().BoolVar(&pushNoTrack, "no-track", false, "Upload without recording in gosf.toml")
+	pushCmd.Flags().BoolVar(&pushNoCheckRemote, "no-check-remote", false, "Skip remote version lookups for bare push")
 	rootCmd.AddCommand(pushCmd)
 }

@@ -227,6 +227,17 @@ func findEntryByLocal(m *manifest.Manifest, local string) int {
 	return -1
 }
 
+// findEntryByRemote returns the index of the first manifest entry whose
+// resolved project and remote path match, or -1 if not found.
+func findEntryByRemote(m *manifest.Manifest, projectID, remotePath string) int {
+	for i, e := range m.Files {
+		if e.Remote == remotePath && e.ResolveProject(m.Project.ID) == projectID {
+			return i
+		}
+	}
+	return -1
+}
+
 func formatSizeMB(n int64) string {
 	return fmt.Sprintf("%.0f MB", float64(n)/1024/1024)
 }
