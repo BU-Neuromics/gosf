@@ -259,6 +259,114 @@ func RevisionURL(downloadURL string, revision int) string {
 	return u.String()
 }
 
+// Rename renames a file to newName within the same folder.
+// moveURL is the file's Waterbutler move link.
+func (c *WaterbutlerClient) Rename(ctx context.Context, moveURL, newName string) error {
+	return c.postAction(ctx, moveURL, map[string]any{"action": "rename", "rename": newName})
+}
+
+// Move moves a file to a different folder (and optionally renames it).
+// moveURL is the file's Waterbutler move link. destNodeID may be empty for
+// same-project moves. destFolder is the destination folder path (e.g. "/results").
+// newName is the filename at the destination; empty keeps the original name.
+// conflict is "keep", "replace", or "warn" (Waterbutler default if empty).
+func (c *WaterbutlerClient) Move(ctx context.Context, moveURL, destNodeID, destFolder, newName, conflict string) error {
+	body := map[string]any{"action": "move", "path": destFolder}
+	if newName != "" {
+		body["rename"] = newName
+	}
+	if conflict != "" {
+		body["conflict"] = conflict
+	}
+	if destNodeID != "" {
+		body["resource"] = destNodeID
+	}
+	return c.postAction(ctx, moveURL, body)
+}
+
+// Copy copies a file to a destination folder.
+// Parameters mirror Move; the original file is left untouched.
+func (c *WaterbutlerClient) Copy(ctx context.Context, moveURL, destNodeID, destFolder, newName, conflict string) error {
+	body := map[string]any{"action": "copy", "path": destFolder}
+	if newName != "" {
+		body["rename"] = newName
+	}
+	if conflict != "" {
+		body["conflict"] = conflict
+	}
+	if destNodeID != "" {
+		body["resource"] = destNodeID
+	}
+	return c.postAction(ctx, moveURL, body)
+}
+
+// CreateFolder creates a new folder inside parentPath within a node's OSF Storage.
+func (c *WaterbutlerClient) CreateFolder(ctx context.Context, nodeID, parentPath, name string) error {
+	u := BuildFolderURL(nodeID, parentPath, name)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, u, http.NoBody)
+	if err != nil {
+		return err
+	}
+	if auth := c.authHeader(); auth != "" {
+		req.Header.Set("Authorization", auth)
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		body, _ := io.ReadAll(resp.Body)
+		return parseAPIError(resp.StatusCode, body)
+	}
+	return nil
+}
+
+// postAction sends a JSON POST to actionURL with the given body map.
+func (c *WaterbutlerClient) postAction(ctx context.Context, actionURL string, body map[string]any) error {
+	b, err := json.Marshal(body)
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, actionURL, strings.NewReader(string(b)))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if auth := c.authHeader(); auth != "" {
+		req.Header.Set("Authorization", auth)
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		respBody, _ := io.ReadAll(resp.Body)
+		return parseAPIError(resp.StatusCode, respBody)
+	}
+	return nil
+}
+
+// BuildFolderURL constructs the Waterbutler URL for creating a new folder.
+func BuildFolderURL(nodeID, parentPath, name string) string {
+	filesBase := os.Getenv("GOSF_FILES_BASE")
+	if filesBase == "" {
+		filesBase = wbBase
+	}
+	base := filesBase + "/v1/resources/" + nodeID + "/providers/osfstorage/"
+	p := strings.Trim(parentPath, "/")
+	if p != "" {
+		parts := strings.Split(p, "/")
+		encoded := make([]string, len(parts))
+		for i, seg := range parts {
+			encoded[i] = url.PathEscape(seg)
+		}
+		base += strings.Join(encoded, "/") + "/"
+	}
+	return base + "?name=" + url.QueryEscape(name) + "&kind=folder"
+}
+
 func truncateName(s string, max int) string {
 	// Show only the last component for cleaner display
 	if idx := strings.LastIndexByte(s, '/'); idx >= 0 {
