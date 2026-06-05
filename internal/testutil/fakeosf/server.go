@@ -96,6 +96,7 @@ type Server struct {
 	projects map[string]*fakeProject
 	allFiles map[string]*File // all files across projects, keyed by ID
 	uploads  []UploadRecord
+	deletes  []string // file IDs that received a DELETE request
 	nextID   int
 	mu       sync.Mutex
 }
@@ -193,6 +194,15 @@ func (s *Server) Uploads() []UploadRecord {
 	return result
 }
 
+// Deletes returns the file IDs (from /v1/files/{id}/delete) that received a DELETE.
+func (s *Server) Deletes() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	result := make([]string, len(s.deletes))
+	copy(result, s.deletes)
+	return result
+}
+
 // GetFile returns the File at filePath in projectID, or nil.
 func (s *Server) GetFile(projectID, filePath string) *File {
 	s.mu.Lock()
@@ -209,6 +219,8 @@ func (s *Server) GetFile(projectID, filePath string) *File {
 func (s *Server) handler(w http.ResponseWriter, r *http.Request) {
 	p := r.URL.Path
 	switch {
+	case r.Method == http.MethodGet && p == "/v2/users/me/nodes/":
+		s.handleUserNodes(w, r)
 	case r.Method == http.MethodGet && strings.HasPrefix(p, "/v2/nodes/") && strings.Contains(p, "/files/osfstorage/"):
 		s.handleFileList(w, r)
 	case r.Method == http.MethodGet && strings.HasPrefix(p, "/v2/nodes/"):
@@ -524,7 +536,35 @@ func (s *Server) handleVersionUpload(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (s *Server) handleUserNodes(w http.ResponseWriter, r *http.Request) {
+	s.mu.Lock()
+	nodes := make([]map[string]any, 0, len(s.projects))
+	for _, proj := range s.projects {
+		nodes = append(nodes, map[string]any{
+			"id": proj.id,
+			"attributes": map[string]any{
+				"title":         proj.title,
+				"description":   "",
+				"date_created":  "2024-01-01T00:00:00",
+				"date_modified": "2024-01-01T00:00:00",
+				"public":        true,
+				"category":      "project",
+			},
+		})
+	}
+	s.mu.Unlock()
+	writeJSON(w, http.StatusOK, map[string]any{
+		"data":  nodes,
+		"links": map[string]any{"next": nil},
+	})
+}
+
 func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
+	// /v1/files/{fileID}/delete
+	fileID := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/v1/files/"), "/delete")
+	s.mu.Lock()
+	s.deletes = append(s.deletes, fileID)
+	s.mu.Unlock()
 	w.WriteHeader(http.StatusNoContent)
 }
 

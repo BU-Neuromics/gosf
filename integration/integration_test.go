@@ -526,3 +526,391 @@ func TestAdd_JSON(t *testing.T) {
 		t.Errorf("manifest_created = %v", result["manifest_created"])
 	}
 }
+
+// ---- Ls ----
+
+func TestLs_Text(t *testing.T) {
+	env := newTestEnv(t)
+	env.srv.AddProject("abc12", "Test Project")
+	env.srv.AddFile("abc12", "/results.csv", []byte("data"))
+	env.srv.AddFile("abc12", "/report.pdf", []byte("pdf content"))
+
+	stdout, stderr, code := env.run("ls", "abc12")
+	if code != 0 {
+		t.Fatalf("exit %d; stderr=%s", code, stderr)
+	}
+	if !strings.Contains(stdout, "results.csv") {
+		t.Errorf("expected results.csv in output; got %q", stdout)
+	}
+	if !strings.Contains(stdout, "report.pdf") {
+		t.Errorf("expected report.pdf in output; got %q", stdout)
+	}
+}
+
+func TestLs_JSON(t *testing.T) {
+	env := newTestEnv(t)
+	env.srv.AddProject("abc12", "Test Project")
+	env.srv.AddFile("abc12", "/data/counts.h5", []byte("h5"))
+
+	stdout, _, code := env.run("ls", "abc12:/data", "--output=json")
+	if code != 0 {
+		t.Fatalf("exit %d; stdout=%s", code, stdout)
+	}
+	var items []map[string]any
+	if err := json.Unmarshal([]byte(stdout), &items); err != nil {
+		t.Fatalf("parse JSON: %v\n%s", err, stdout)
+	}
+	if len(items) != 1 {
+		t.Fatalf("items = %d, want 1", len(items))
+	}
+	attrs, _ := items[0]["attributes"].(map[string]any)
+	if attrs["name"] != "counts.h5" {
+		t.Errorf("name = %v, want counts.h5", attrs["name"])
+	}
+}
+
+func TestLs_Empty(t *testing.T) {
+	env := newTestEnv(t)
+	env.srv.AddProject("abc12", "Test Project")
+	// No files — root listing should report empty.
+
+	_, stderr, code := env.run("ls", "abc12")
+	if code != 0 {
+		t.Fatalf("exit %d; stderr=%s", code, stderr)
+	}
+	if !strings.Contains(stderr, "empty") {
+		t.Errorf("expected '(empty)' message; got stderr=%q", stderr)
+	}
+}
+
+func TestLs_JSON_Empty(t *testing.T) {
+	env := newTestEnv(t)
+	env.srv.AddProject("abc12", "Test Project")
+
+	stdout, _, code := env.run("ls", "abc12", "--output=json")
+	if code != 0 {
+		t.Fatalf("exit %d; stdout=%s", code, stdout)
+	}
+	var items []any
+	if err := json.Unmarshal([]byte(stdout), &items); err != nil {
+		t.Fatalf("parse JSON: %v\n%s", err, stdout)
+	}
+	if len(items) != 0 {
+		t.Errorf("expected empty array [], got %v", items)
+	}
+}
+
+// ---- Rm ----
+
+func TestRm_DryRun(t *testing.T) {
+	env := newTestEnv(t)
+	env.srv.AddProject("abc12", "Test Project")
+	env.srv.AddFile("abc12", "/old.csv", []byte("stale"))
+
+	stdout, _, code := env.run("rm", "abc12:/old.csv", "--dry-run")
+	if code != 0 {
+		t.Fatalf("exit %d; stdout=%s", code, stdout)
+	}
+	if len(env.srv.Deletes()) != 0 {
+		t.Error("dry-run should not delete anything")
+	}
+	if !strings.Contains(stdout, "dry-run") {
+		t.Errorf("expected dry-run in output; got %q", stdout)
+	}
+}
+
+func TestRm_WithYes(t *testing.T) {
+	env := newTestEnv(t)
+	env.srv.AddProject("abc12", "Test Project")
+	f := env.srv.AddFile("abc12", "/scratch.csv", []byte("temp"))
+
+	stdout, stderr, code := env.run("rm", "abc12:/scratch.csv", "--yes")
+	if code != 0 {
+		t.Fatalf("exit %d; stderr=%s stdout=%s", code, stderr, stdout)
+	}
+	deletes := env.srv.Deletes()
+	if len(deletes) != 1 {
+		t.Fatalf("deletes = %d, want 1", len(deletes))
+	}
+	if deletes[0] != f.ID {
+		t.Errorf("deleted file ID = %q, want %q", deletes[0], f.ID)
+	}
+}
+
+func TestRm_JSON_RequiresYes(t *testing.T) {
+	env := newTestEnv(t)
+	env.srv.AddProject("abc12", "Test Project")
+	env.srv.AddFile("abc12", "/data.csv", []byte("x"))
+
+	_, stderr, code := env.run("rm", "abc12:/data.csv", "--output=json")
+	if code == 0 {
+		t.Fatal("expected non-zero exit when --yes omitted in JSON mode")
+	}
+	if !strings.Contains(stderr, "yes") {
+		t.Errorf("expected mention of --yes in error; got %q", stderr)
+	}
+}
+
+func TestRm_JSON(t *testing.T) {
+	env := newTestEnv(t)
+	env.srv.AddProject("abc12", "Test Project")
+	env.srv.AddFile("abc12", "/data.csv", []byte("content"))
+
+	stdout, _, code := env.run("rm", "abc12:/data.csv", "--yes", "--output=json")
+	if code != 0 {
+		t.Fatalf("exit %d; stdout=%s", code, stdout)
+	}
+	var result map[string]any
+	if err := json.Unmarshal([]byte(stdout), &result); err != nil {
+		t.Fatalf("parse JSON: %v\n%s", err, stdout)
+	}
+	if result["node"] != "abc12" {
+		t.Errorf("node = %v", result["node"])
+	}
+	if result["path"] != "/data.csv" {
+		t.Errorf("path = %v", result["path"])
+	}
+	if result["kind"] != "file" {
+		t.Errorf("kind = %v", result["kind"])
+	}
+	if result["dry_run"] != false {
+		t.Errorf("dry_run = %v", result["dry_run"])
+	}
+}
+
+func TestRm_JSON_DryRun(t *testing.T) {
+	env := newTestEnv(t)
+	env.srv.AddProject("abc12", "Test Project")
+	env.srv.AddFile("abc12", "/tmp.csv", []byte("x"))
+
+	stdout, _, code := env.run("rm", "abc12:/tmp.csv", "--dry-run", "--output=json")
+	if code != 0 {
+		t.Fatalf("exit %d; stdout=%s", code, stdout)
+	}
+	var result map[string]any
+	if err := json.Unmarshal([]byte(stdout), &result); err != nil {
+		t.Fatalf("parse JSON: %v\n%s", err, stdout)
+	}
+	if result["dry_run"] != true {
+		t.Errorf("dry_run = %v, want true", result["dry_run"])
+	}
+	if len(env.srv.Deletes()) != 0 {
+		t.Error("dry-run --output=json should not delete")
+	}
+}
+
+// ---- Versions ----
+
+func TestVersions_JSON(t *testing.T) {
+	env := newTestEnv(t)
+	env.srv.AddProject("abc12", "Test Project")
+	env.srv.AddFile("abc12", "/data.csv", []byte("v1"))
+
+	stdout, _, code := env.run("versions", "abc12:/data.csv", "--output=json")
+	if code != 0 {
+		t.Fatalf("exit %d; stdout=%s", code, stdout)
+	}
+	var result map[string]any
+	if err := json.Unmarshal([]byte(stdout), &result); err != nil {
+		t.Fatalf("parse JSON: %v\n%s", err, stdout)
+	}
+	versions, ok := result["versions"].([]any)
+	if !ok || len(versions) != 1 {
+		t.Fatalf("versions = %v", result["versions"])
+	}
+	v := versions[0].(map[string]any)
+	if v["version"] != float64(1) {
+		t.Errorf("version = %v, want 1", v["version"])
+	}
+	if v["contributor"] != "test@example.com" {
+		t.Errorf("contributor = %v, want test@example.com", v["contributor"])
+	}
+}
+
+func TestVersions_Text(t *testing.T) {
+	env := newTestEnv(t)
+	env.srv.AddProject("abc12", "Test Project")
+	env.srv.AddFile("abc12", "/report.csv", []byte("content here"))
+
+	stdout, stderr, code := env.run("versions", "abc12:/report.csv")
+	if code != 0 {
+		t.Fatalf("exit %d; stderr=%s", code, stderr)
+	}
+	if !strings.Contains(stdout, "VERSION") {
+		t.Errorf("expected VERSION header; got %q", stdout)
+	}
+	if !strings.Contains(stdout, "1") {
+		t.Errorf("expected version 1 in output; got %q", stdout)
+	}
+}
+
+func TestVersions_FolderError(t *testing.T) {
+	env := newTestEnv(t)
+	env.srv.AddProject("abc12", "Test Project")
+	// Create a folder by adding a file inside it.
+	env.srv.AddFile("abc12", "/mydir/file.csv", []byte("x"))
+
+	_, stderr, code := env.run("versions", "abc12:/mydir")
+	if code == 0 {
+		t.Fatal("expected non-zero exit for folder target")
+	}
+	if !strings.Contains(stderr, "folder") {
+		t.Errorf("expected 'folder' in error; got %q", stderr)
+	}
+}
+
+// ---- Info ----
+
+func TestInfo_JSON(t *testing.T) {
+	env := newTestEnv(t)
+	env.srv.AddProject("abc12", "My Research Project")
+
+	stdout, _, code := env.run("info", "abc12", "--output=json")
+	if code != 0 {
+		t.Fatalf("exit %d; stdout=%s", code, stdout)
+	}
+	var result map[string]any
+	if err := json.Unmarshal([]byte(stdout), &result); err != nil {
+		t.Fatalf("parse JSON: %v\n%s", err, stdout)
+	}
+	if result["id"] != "abc12" {
+		t.Errorf("id = %v, want abc12", result["id"])
+	}
+	attrs, _ := result["attributes"].(map[string]any)
+	if attrs["title"] != "My Research Project" {
+		t.Errorf("title = %v", attrs["title"])
+	}
+}
+
+func TestInfo_Text(t *testing.T) {
+	env := newTestEnv(t)
+	env.srv.AddProject("prj99", "Neuroscience Study")
+
+	stdout, stderr, code := env.run("info", "prj99")
+	if code != 0 {
+		t.Fatalf("exit %d; stderr=%s", code, stderr)
+	}
+	if !strings.Contains(stdout, "Neuroscience Study") {
+		t.Errorf("expected title in output; got %q", stdout)
+	}
+	if !strings.Contains(stdout, "prj99") {
+		t.Errorf("expected GUID in output; got %q", stdout)
+	}
+}
+
+func TestInfo_NotFound(t *testing.T) {
+	env := newTestEnv(t)
+	// No projects registered — any lookup should 404.
+
+	_, stderr, code := env.run("info", "xxxxx")
+	if code == 0 {
+		t.Fatal("expected non-zero exit for unknown project")
+	}
+	if !strings.Contains(stderr, "not found") {
+		t.Errorf("expected 'not found' in error; got %q", stderr)
+	}
+}
+
+// ---- Projects ----
+
+func TestProjects_JSON(t *testing.T) {
+	env := newTestEnv(t)
+	env.srv.AddProject("aaa11", "Project Alpha")
+	env.srv.AddProject("bbb22", "Project Beta")
+
+	stdout, _, code := env.run("projects", "--output=json")
+	if code != 0 {
+		t.Fatalf("exit %d; stdout=%s", code, stdout)
+	}
+	var nodes []map[string]any
+	if err := json.Unmarshal([]byte(stdout), &nodes); err != nil {
+		t.Fatalf("parse JSON: %v\n%s", err, stdout)
+	}
+	if len(nodes) != 2 {
+		t.Fatalf("nodes = %d, want 2", len(nodes))
+	}
+	ids := map[string]bool{}
+	for _, n := range nodes {
+		ids[n["id"].(string)] = true
+	}
+	if !ids["aaa11"] || !ids["bbb22"] {
+		t.Errorf("expected both project IDs; got %v", ids)
+	}
+}
+
+func TestProjects_Text(t *testing.T) {
+	env := newTestEnv(t)
+	env.srv.AddProject("ccc33", "The Study")
+
+	stdout, stderr, code := env.run("projects")
+	if code != 0 {
+		t.Fatalf("exit %d; stderr=%s", code, stderr)
+	}
+	if !strings.Contains(stdout, "The Study") {
+		t.Errorf("expected project title; got %q", stdout)
+	}
+	if !strings.Contains(stdout, "ccc33") {
+		t.Errorf("expected project GUID; got %q", stdout)
+	}
+}
+
+func TestProjects_NoToken(t *testing.T) {
+	env := newTestEnv(t)
+
+	// Override to remove the token.
+	cmd := exec.Command(binaryPath, "projects")
+	cmd.Dir = env.dir
+	cmd.Env = append(os.Environ(),
+		"GOSF_API_BASE="+env.srv.URL()+"/v2",
+		"GOSF_FILES_BASE="+env.srv.URL(),
+		"OSF_TOKEN=",
+		"HOME="+env.dir,
+		"XDG_CONFIG_HOME="+filepath.Join(env.dir, ".config"),
+	)
+	var outBuf, errBuf bytes.Buffer
+	cmd.Stdout = &outBuf
+	cmd.Stderr = &errBuf
+	_ = cmd.Run()
+	if cmd.ProcessState.ExitCode() == 0 {
+		t.Fatal("expected non-zero exit without token")
+	}
+	if !strings.Contains(errBuf.String(), "auth") {
+		t.Errorf("expected auth hint; got %q", errBuf.String())
+	}
+}
+
+// ---- Open ----
+
+func TestOpen_JSON_Root(t *testing.T) {
+	env := newTestEnv(t)
+
+	stdout, _, code := env.run("open", "abc12", "--output=json")
+	if code != 0 {
+		t.Fatalf("exit %d; stdout=%s", code, stdout)
+	}
+	var result map[string]any
+	if err := json.Unmarshal([]byte(stdout), &result); err != nil {
+		t.Fatalf("parse JSON: %v\n%s", err, stdout)
+	}
+	want := "https://osf.io/abc12/"
+	if result["url"] != want {
+		t.Errorf("url = %v, want %q", result["url"], want)
+	}
+}
+
+func TestOpen_JSON_File(t *testing.T) {
+	env := newTestEnv(t)
+
+	stdout, _, code := env.run("open", "abc12:/data/results.csv", "--output=json")
+	if code != 0 {
+		t.Fatalf("exit %d; stdout=%s", code, stdout)
+	}
+	var result map[string]any
+	if err := json.Unmarshal([]byte(stdout), &result); err != nil {
+		t.Fatalf("parse JSON: %v\n%s", err, stdout)
+	}
+	want := "https://osf.io/abc12/files/osfstorage/data/results.csv"
+	if result["url"] != want {
+		t.Errorf("url = %v, want %q", result["url"], want)
+	}
+}
