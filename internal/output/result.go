@@ -58,15 +58,19 @@ func (r *PushResult) Add(path, action string) {
 	r.Uploaded = append(r.Uploaded, TransferItem{Path: path, Action: action})
 }
 
+// AddEntry describes one file staged by `gosf add`.
+type AddEntry struct {
+	Local   string `json:"local"`
+	Remote  string `json:"remote"`
+	Project string `json:"project"`
+	Version int    `json:"version"`
+	MD5     string `json:"md5"`
+}
+
 // AddResult is emitted by `gosf add --output=json`.
 type AddResult struct {
-	Local           string `json:"local"`
-	Remote          string `json:"remote"`
-	Project         string `json:"project"`
-	Direction       string `json:"direction"`
-	Version         int    `json:"version"`
-	MD5             string `json:"md5"`
-	ManifestCreated bool   `json:"manifest_created"`
+	Entries         []AddEntry `json:"entries"`
+	ManifestCreated bool       `json:"manifest_created"`
 }
 
 // StatusItem describes one manifest entry's state, emitted by `gosf status --output=json`.
@@ -118,6 +122,12 @@ type CpResult struct {
 	Src    string `json:"src"`
 	Dest   string `json:"dest"`
 	DryRun bool   `json:"dry_run"`
+}
+
+// InitResult is emitted by `gosf init --output=json`.
+type InitResult struct {
+	Project string `json:"project"`
+	Created bool   `json:"created"`
 }
 
 // MkdirResult is emitted by `gosf mkdir --output=json`.

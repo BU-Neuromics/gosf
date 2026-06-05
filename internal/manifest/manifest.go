@@ -121,6 +121,29 @@ func FindManifest() (string, string, error) {
 	}
 }
 
+// Init creates or updates gosf.toml in dir with the given project ID.
+// If the file exists, [project].id is updated and all [[files]] entries are preserved.
+// created reports whether a new file was created.
+func Init(dir, projectID string) (path string, created bool, err error) {
+	path = filepath.Join(dir, "gosf.toml")
+
+	var m Manifest
+	if _, statErr := os.Stat(path); os.IsNotExist(statErr) {
+		created = true
+	} else {
+		data, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return path, false, readErr
+		}
+		if parseErr := toml.Unmarshal(data, &m); parseErr != nil {
+			return path, false, fmt.Errorf("parsing %s: %w", path, parseErr)
+		}
+	}
+
+	m.Project.ID = projectID
+	return path, created, Save(&m, path)
+}
+
 // validate checks all manifest invariants.
 func validate(m *Manifest) error {
 	seenLocal := make(map[string]bool)
