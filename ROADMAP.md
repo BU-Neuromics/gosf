@@ -4,7 +4,9 @@ This roadmap covers planned content-management features for agents. The scope
 is deliberately limited to _content_ operations (files, metadata, wiki). User
 management, permissions, and project administration are out of scope.
 
-## v1.1 — File operations and node metadata
+## v1.1 — File operations and node metadata — Released (v1.1.0)
+
+**Status:** ✅ Released 2026-06-05 ([`v1.1.0`](https://github.com/BU-Neuromics/gosf/releases/tag/v1.1.0)). All four commands below are shipped.
 
 Builds on infrastructure already in place (Waterbutler client, OSF metadata
 client) with minimal new API surface.
