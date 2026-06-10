@@ -83,7 +83,7 @@ Path rules follow scp conventions:
 			if nodeID == "" {
 				return fmt.Errorf("no project configured — run: gosf init <project-id>")
 			}
-			manifestPath = "gosf.toml"
+			manifestPath = filepath.Join(".gosf", "gosf.toml")
 			m = &manifest.Manifest{Project: manifest.ProjectConfig{ID: nodeID}}
 			manifestCreated = true
 		} else if findErr != nil {
@@ -126,7 +126,7 @@ Path rules follow scp conventions:
 				}
 				remotePath := pathutil.MapFilePath(localBase, remoteBase, filepath.ToSlash(path))
 				if findEntryByLocal(m, path) >= 0 {
-					return fmt.Errorf("entry with local path %q already exists in gosf.toml", path)
+					return fmt.Errorf("entry with local path %q already exists in .gosf/gosf.toml", path)
 				}
 				e := manifest.Entry{
 					Local:     path,
@@ -149,7 +149,7 @@ Path rules follow scp conventions:
 			// Single file.
 			remotePath := pathutil.FileRemotePath(localSrc, remoteDest)
 			if findEntryByLocal(m, localSrc) >= 0 {
-				return fmt.Errorf("entry with local path %q already exists in gosf.toml", localSrc)
+				return fmt.Errorf("entry with local path %q already exists in .gosf/gosf.toml", localSrc)
 			}
 
 			entry := manifest.Entry{

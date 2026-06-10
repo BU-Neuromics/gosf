@@ -23,8 +23,8 @@ var (
 
 var syncCmd = &cobra.Command{
 	Use:   "sync",
-	Short: "Sync local files with OSF according to gosf.toml",
-	Long: `Sync files declared in gosf.toml between local storage and OSF.
+	Short: "Sync local files with OSF according to .gosf/gosf.toml",
+	Long: `Sync files declared in .gosf/gosf.toml between local storage and OSF.
 
 Default behavior: push all push-eligible entries (direction=push or direction=both)
 and pull all pull-eligible entries (direction=pull or direction=both) that are
@@ -39,7 +39,7 @@ Examples:
 	RunE: func(cmd *cobra.Command, args []string) error {
 		manifestPath, repoRoot, err := manifest.FindManifest()
 		if manifest.IsNotFound(err) {
-			return fmt.Errorf("no gosf.toml found — run 'gosf add' to create one")
+			return fmt.Errorf("no .gosf/gosf.toml found — run 'gosf add' to create one")
 		}
 		if err != nil {
 			return err
@@ -314,7 +314,7 @@ func processPullEntry(
 			}
 		}
 		if !quiet {
-			fmt.Printf("  ↑  %s  remote has v%d (manifest pins v%d).\n     Bump version in gosf.toml then run --pull-new to update.\n",
+			fmt.Printf("  ↑  %s  remote has v%d (manifest pins v%d).\n     Bump version in .gosf/gosf.toml then run --pull-new to update.\n",
 				entry.Local, latest, entry.Version)
 		}
 		return "skipped_remote_newer", false, nil

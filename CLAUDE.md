@@ -83,7 +83,7 @@ gosf/
 │   ├── info.go
 │   ├── auth.go
 │   ├── open.go
-│   ├── add.go               # gosf add — add entry to gosf.toml
+│   ├── add.go               # gosf add — add entry to .gosf/gosf.toml
 │   ├── status.go            # gosf status — show manifest sync status
 │   ├── sync.go              # gosf sync — push/pull according to manifest
 │   └── manifest_helpers.go  # computeLocalMD5, fileVersionsToRemote, latestRemoteVersion
@@ -194,7 +194,7 @@ All list endpoints paginate. Check `links.next` and follow until null.
 `abc12/xyz34:/path` — `abc12` is the parent project GUID, `xyz34` is the
 component (child node) GUID. The path is resolved under `xyz34`.
 
-## Sync manifest (gosf.toml)
+## Sync manifest (.gosf/gosf.toml)
 
 ### Schema
 
@@ -255,7 +255,7 @@ When `--no-check-remote`: only IN_SYNC, MISSING, AHEAD_OF_MANIFEST, NOT_PUSHED a
 gosf add <local-path> <project>:<remote-path> [--direction=push|pull|both]
 ```
 - Default direction: push.
-- Creates gosf.toml if absent.
+- Creates .gosf/gosf.toml if absent.
 - Errors if local path already in manifest.
 - Fetches remote version+MD5 if file exists; writes version=0, md5="" otherwise.
 - Prints .gitignore tip for local files >50 MB.
@@ -287,7 +287,7 @@ Flags: `--pull-new`, `--force` (overwrite AHEAD_OF_MANIFEST on pull), `--dry-run
 
 ### `gosf push` manifest integration
 
-- If gosf.toml exists and the pushed path has `direction=pull` → refuse push before any network call.
+- If .gosf/gosf.toml exists and the pushed path has `direction=pull` → refuse push before any network call.
 - After a successful push, if the entry has `direction=push` or `both` and `UploadResult.Version > 0` → update manifest atomically.
 
 ### Exit code handling

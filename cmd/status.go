@@ -24,7 +24,7 @@ var statusCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		manifestPath, repoRoot, err := manifest.FindManifest()
 		if manifest.IsNotFound(err) {
-			return fmt.Errorf("no gosf.toml found — run 'gosf add' to create one")
+			return fmt.Errorf("no .gosf/gosf.toml found — run 'gosf add' to create one")
 		}
 		if err != nil {
 			return err

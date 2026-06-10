@@ -182,7 +182,7 @@ func TestPull_AutoTracksFile(t *testing.T) {
 	env := newTestEnv(t)
 	env.srv.AddProject("abc12", "Test Project")
 	env.srv.AddFile("abc12", "/data/counts.h5", []byte("h5 content"))
-	env.writeFile("gosf.toml", "[project]\nid = \"abc12\"\n")
+	env.writeFile(".gosf/gosf.toml", "[project]\nid = \"abc12\"\n")
 
 	_, stderr, code := env.run("pull", "abc12:/data/counts.h5", "--quiet")
 	if code != 0 {
@@ -191,7 +191,7 @@ func TestPull_AutoTracksFile(t *testing.T) {
 	if !env.fileExists("data/counts.h5") {
 		t.Fatal("file not downloaded")
 	}
-	toml := env.readFile("gosf.toml")
+	toml := env.readFile(".gosf/gosf.toml")
 	if !strings.Contains(toml, "/data/counts.h5") {
 		t.Errorf("expected manifest entry for /data/counts.h5:\n%s", toml)
 	}
@@ -204,7 +204,7 @@ func TestPull_NoTrack(t *testing.T) {
 	env := newTestEnv(t)
 	env.srv.AddProject("abc12", "Test Project")
 	env.srv.AddFile("abc12", "/data/counts.h5", []byte("h5 content"))
-	env.writeFile("gosf.toml", "[project]\nid = \"abc12\"\n")
+	env.writeFile(".gosf/gosf.toml", "[project]\nid = \"abc12\"\n")
 
 	_, stderr, code := env.run("pull", "abc12:/data/counts.h5", "--no-track", "--quiet")
 	if code != 0 {
@@ -213,7 +213,7 @@ func TestPull_NoTrack(t *testing.T) {
 	if !env.fileExists("data/counts.h5") {
 		t.Fatal("file not downloaded")
 	}
-	toml := env.readFile("gosf.toml")
+	toml := env.readFile(".gosf/gosf.toml")
 	if strings.Contains(toml, "counts.h5") {
 		t.Errorf("--no-track: manifest should not contain counts.h5:\n%s", toml)
 	}
@@ -223,7 +223,7 @@ func TestPull_DuplicateRemoteConflict(t *testing.T) {
 	env := newTestEnv(t)
 	env.srv.AddProject("abc12", "Test Project")
 	env.srv.AddFile("abc12", "/data/counts.h5", []byte("data"))
-	env.writeFile("gosf.toml", `[project]
+	env.writeFile(".gosf/gosf.toml", `[project]
 id = "abc12"
 
 [[files]]
@@ -247,7 +247,7 @@ func TestPull_BareFollowsManifest(t *testing.T) {
 	env := newTestEnv(t)
 	env.srv.AddProject("abc12", "Test Project")
 	f := env.srv.AddFile("abc12", "/data/counts.h5", []byte("counts data"))
-	env.writeFile("gosf.toml", fmt.Sprintf(`[project]
+	env.writeFile(".gosf/gosf.toml", fmt.Sprintf(`[project]
 id = "abc12"
 
 [[files]]
@@ -270,7 +270,7 @@ md5 = "%s"
 func TestPull_BareNoProjectID(t *testing.T) {
 	env := newTestEnv(t)
 	// gosf.toml exists but has no [project].id and no entries.
-	env.writeFile("gosf.toml", "")
+	env.writeFile(".gosf/gosf.toml", "")
 
 	_, stderr, code := env.run("pull")
 	if code == 0 {
@@ -284,7 +284,7 @@ func TestPull_BareNoProjectID(t *testing.T) {
 func TestPull_BareSkipsPushEntries(t *testing.T) {
 	env := newTestEnv(t)
 	env.srv.AddProject("abc12", "Test Project")
-	env.writeFile("gosf.toml", `[project]
+	env.writeFile(".gosf/gosf.toml", `[project]
 id = "abc12"
 
 [[files]]
@@ -393,14 +393,14 @@ func TestPush_JSON(t *testing.T) {
 func TestPush_AutoTracksFile(t *testing.T) {
 	env := newTestEnv(t)
 	env.srv.AddProject("abc12", "Test Project")
-	env.writeFile("gosf.toml", "[project]\nid = \"abc12\"\n")
+	env.writeFile(".gosf/gosf.toml", "[project]\nid = \"abc12\"\n")
 	env.writeFile("data.csv", "col1,col2\n1,2\n")
 
 	_, stderr, code := env.run("push", "data.csv", "abc12:/data.csv", "--quiet")
 	if code != 0 {
 		t.Fatalf("push exit %d; stderr=%s", code, stderr)
 	}
-	toml := env.readFile("gosf.toml")
+	toml := env.readFile(".gosf/gosf.toml")
 	if !strings.Contains(toml, "/data.csv") {
 		t.Errorf("expected /data.csv in gosf.toml:\n%s", toml)
 	}
@@ -415,14 +415,14 @@ func TestPush_AutoTracksFile(t *testing.T) {
 func TestPush_NoTrack(t *testing.T) {
 	env := newTestEnv(t)
 	env.srv.AddProject("abc12", "Test Project")
-	env.writeFile("gosf.toml", "[project]\nid = \"abc12\"\n")
+	env.writeFile(".gosf/gosf.toml", "[project]\nid = \"abc12\"\n")
 	env.writeFile("data.csv", "content")
 
 	_, stderr, code := env.run("push", "data.csv", "abc12:/data.csv", "--no-track", "--quiet")
 	if code != 0 {
 		t.Fatalf("push exit %d; stderr=%s", code, stderr)
 	}
-	toml := env.readFile("gosf.toml")
+	toml := env.readFile(".gosf/gosf.toml")
 	if strings.Contains(toml, "data.csv") {
 		t.Errorf("--no-track: manifest should not contain data.csv:\n%s", toml)
 	}
@@ -431,7 +431,7 @@ func TestPush_NoTrack(t *testing.T) {
 func TestPush_DuplicateRemoteConflict(t *testing.T) {
 	env := newTestEnv(t)
 	env.srv.AddProject("abc12", "Test Project")
-	env.writeFile("gosf.toml", `[project]
+	env.writeFile(".gosf/gosf.toml", `[project]
 id = "abc12"
 
 [[files]]
@@ -456,7 +456,7 @@ func TestPush_BarePushFollowsManifest(t *testing.T) {
 	env := newTestEnv(t)
 	env.srv.AddProject("abc12", "Test Project")
 	env.writeFile("data/report.csv", "report data")
-	env.writeFile("gosf.toml", `[project]
+	env.writeFile(".gosf/gosf.toml", `[project]
 id = "abc12"
 
 [[files]]
@@ -478,7 +478,7 @@ md5 = ""
 	if uploads[0].Path != "/data/report.csv" {
 		t.Errorf("upload path = %q, want /data/report.csv", uploads[0].Path)
 	}
-	toml := env.readFile("gosf.toml")
+	toml := env.readFile(".gosf/gosf.toml")
 	if !strings.Contains(toml, "version = 1") {
 		t.Errorf("expected version = 1 after bare push:\n%s", toml)
 	}
@@ -486,7 +486,7 @@ md5 = ""
 
 func TestPush_BarePushNoProjectID(t *testing.T) {
 	env := newTestEnv(t)
-	env.writeFile("gosf.toml", "")
+	env.writeFile(".gosf/gosf.toml", "")
 
 	_, stderr, code := env.run("push")
 	if code == 0 {
@@ -501,7 +501,7 @@ func TestPush_BarePushSkipsPullEntries(t *testing.T) {
 	env := newTestEnv(t)
 	env.srv.AddProject("abc12", "Test Project")
 	env.writeFile("data/pull_only.csv", "data")
-	env.writeFile("gosf.toml", `[project]
+	env.writeFile(".gosf/gosf.toml", `[project]
 id = "abc12"
 
 [[files]]
@@ -529,7 +529,7 @@ func TestSync_PushAheadOfManifest(t *testing.T) {
 	f := env.srv.AddFile("abc12", "/data.csv", []byte("original"))
 
 	env.writeFile("data.csv", "modified content")
-	env.writeFile("gosf.toml", fmt.Sprintf(`[project]
+	env.writeFile(".gosf/gosf.toml", fmt.Sprintf(`[project]
 id = "abc12"
 
 [[files]]
@@ -553,7 +553,7 @@ md5       = "%s"
 		t.Errorf("upload content = %q", uploads[0].Content)
 	}
 
-	toml := env.readFile("gosf.toml")
+	toml := env.readFile(".gosf/gosf.toml")
 	if !strings.Contains(toml, "version = 2") {
 		t.Errorf("expected version = 2 in gosf.toml:\n%s", toml)
 	}
@@ -564,7 +564,7 @@ func TestSync_PullsMissingFile(t *testing.T) {
 	env.srv.AddProject("abc12", "Test Project")
 	f := env.srv.AddFile("abc12", "/data.csv", []byte("remote content"))
 
-	env.writeFile("gosf.toml", fmt.Sprintf(`[project]
+	env.writeFile(".gosf/gosf.toml", fmt.Sprintf(`[project]
 id = "abc12"
 
 [[files]]
@@ -595,7 +595,7 @@ func TestSync_PullsAndPushes(t *testing.T) {
 	// push-eligible: AHEAD_OF_MANIFEST (local differs from pinned MD5)
 	env.writeFile("push-me.csv", "modified locally")
 	// pull-eligible: MISSING (file doesn't exist locally)
-	env.writeFile("gosf.toml", fmt.Sprintf(`[project]
+	env.writeFile(".gosf/gosf.toml", fmt.Sprintf(`[project]
 id = "abc12"
 
 [[files]]
@@ -636,7 +636,7 @@ md5       = "%s"
 
 func TestSync_NoProjectID(t *testing.T) {
 	env := newTestEnv(t)
-	env.writeFile("gosf.toml", `[project]
+	env.writeFile(".gosf/gosf.toml", `[project]
 id = ""
 `)
 
@@ -655,7 +655,7 @@ func TestSync_DryRun(t *testing.T) {
 	f := env.srv.AddFile("abc12", "/data.csv", []byte("original"))
 
 	env.writeFile("data.csv", "changed")
-	env.writeFile("gosf.toml", fmt.Sprintf(`[project]
+	env.writeFile(".gosf/gosf.toml", fmt.Sprintf(`[project]
 id = "abc12"
 
 [[files]]
@@ -684,7 +684,7 @@ func TestSync_JSON(t *testing.T) {
 	f := env.srv.AddFile("abc12", "/report.csv", []byte("v1"))
 
 	env.writeFile("report.csv", "v1") // in sync
-	env.writeFile("gosf.toml", fmt.Sprintf(`[project]
+	env.writeFile(".gosf/gosf.toml", fmt.Sprintf(`[project]
 id = "abc12"
 
 [[files]]
@@ -721,7 +721,7 @@ func TestStatus_JSON_States(t *testing.T) {
 	env.writeFile("synced.csv", "synced") // matches pinned MD5 → IN_SYNC
 	// missing.csv does not exist locally → MISSING
 
-	env.writeFile("gosf.toml", fmt.Sprintf(`[project]
+	env.writeFile(".gosf/gosf.toml", fmt.Sprintf(`[project]
 id = "abc12"
 
 [[files]]
@@ -768,7 +768,7 @@ func TestStatus_ExitCode(t *testing.T) {
 	f := env.srv.AddFile("abc12", "/ok.csv", []byte("ok"))
 
 	env.writeFile("ok.csv", "ok")
-	env.writeFile("gosf.toml", fmt.Sprintf(`[project]
+	env.writeFile(".gosf/gosf.toml", fmt.Sprintf(`[project]
 id = "abc12"
 
 [[files]]
@@ -797,7 +797,7 @@ func TestAdd_FetchesRemoteVersion(t *testing.T) {
 		t.Fatalf("add exit %d; stderr=%s", code, stderr)
 	}
 
-	toml := env.readFile("gosf.toml")
+	toml := env.readFile(".gosf/gosf.toml")
 	if !strings.Contains(toml, "version = 1") {
 		t.Errorf("expected version = 1 in gosf.toml:\n%s", toml)
 	}
@@ -819,7 +819,7 @@ func TestAdd_NoRemoteFile(t *testing.T) {
 		t.Fatalf("add exit %d; stderr=%s", code, stderr)
 	}
 
-	toml := env.readFile("gosf.toml")
+	toml := env.readFile(".gosf/gosf.toml")
 	if !strings.Contains(toml, "version = 0") {
 		t.Errorf("expected version = 0 in gosf.toml:\n%s", toml)
 	}
@@ -858,7 +858,7 @@ func TestInit_CreatesGOSFToml(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("init exit %d; stderr=%s", code, stderr)
 	}
-	toml := env.readFile("gosf.toml")
+	toml := env.readFile(".gosf/gosf.toml")
 	if !strings.Contains(toml, "abc12") {
 		t.Errorf("expected abc12 in gosf.toml:\n%s", toml)
 	}
@@ -866,12 +866,12 @@ func TestInit_CreatesGOSFToml(t *testing.T) {
 
 func TestInit_UpdatesProject(t *testing.T) {
 	env := newTestEnv(t)
-	env.writeFile("gosf.toml", "[project]\nid = \"old12\"\n")
+	env.writeFile(".gosf/gosf.toml", "[project]\nid = \"old12\"\n")
 	_, stderr, code := env.run("init", "new99")
 	if code != 0 {
 		t.Fatalf("init exit %d; stderr=%s", code, stderr)
 	}
-	toml := env.readFile("gosf.toml")
+	toml := env.readFile(".gosf/gosf.toml")
 	if !strings.Contains(toml, "new99") {
 		t.Errorf("expected new99 in gosf.toml:\n%s", toml)
 	}
@@ -903,13 +903,13 @@ func TestInit_JSON(t *testing.T) {
 func TestAdd_NoDestMirrorsPath(t *testing.T) {
 	env := newTestEnv(t)
 	env.srv.AddProject("abc12", "Test Project")
-	env.writeFile("gosf.toml", "[project]\nid = \"abc12\"\n")
+	env.writeFile(".gosf/gosf.toml", "[project]\nid = \"abc12\"\n")
 
 	_, stderr, code := env.run("add", "data/file.txt")
 	if code != 0 {
 		t.Fatalf("add exit %d; stderr=%s", code, stderr)
 	}
-	toml := env.readFile("gosf.toml")
+	toml := env.readFile(".gosf/gosf.toml")
 	if !strings.Contains(toml, "/data/file.txt") {
 		t.Errorf("expected /data/file.txt in gosf.toml:\n%s", toml)
 	}
@@ -921,13 +921,13 @@ func TestAdd_NoDestMirrorsPath(t *testing.T) {
 func TestAdd_DestDirectory(t *testing.T) {
 	env := newTestEnv(t)
 	env.srv.AddProject("abc12", "Test Project")
-	env.writeFile("gosf.toml", "[project]\nid = \"abc12\"\n")
+	env.writeFile(".gosf/gosf.toml", "[project]\nid = \"abc12\"\n")
 
 	_, stderr, code := env.run("add", "local/file.txt", "abc12:/results/")
 	if code != 0 {
 		t.Fatalf("add exit %d; stderr=%s", code, stderr)
 	}
-	toml := env.readFile("gosf.toml")
+	toml := env.readFile(".gosf/gosf.toml")
 	if !strings.Contains(toml, "/results/file.txt") {
 		t.Errorf("expected /results/file.txt in gosf.toml:\n%s", toml)
 	}
@@ -936,7 +936,7 @@ func TestAdd_DestDirectory(t *testing.T) {
 func TestAdd_DirectoryRecursion(t *testing.T) {
 	env := newTestEnv(t)
 	env.srv.AddProject("abc12", "Test Project")
-	env.writeFile("gosf.toml", "[project]\nid = \"abc12\"\n")
+	env.writeFile(".gosf/gosf.toml", "[project]\nid = \"abc12\"\n")
 	env.writeFile("data/dir/file1.txt", "content")
 	env.writeFile("data/dir/sub/file2.txt", "content")
 
@@ -945,7 +945,7 @@ func TestAdd_DirectoryRecursion(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("add exit %d; stderr=%s", code, stderr)
 	}
-	toml := env.readFile("gosf.toml")
+	toml := env.readFile(".gosf/gosf.toml")
 	if !strings.Contains(toml, "/results/dir/file1.txt") {
 		t.Errorf("expected /results/dir/file1.txt:\n%s", toml)
 	}
@@ -957,7 +957,7 @@ func TestAdd_DirectoryRecursion(t *testing.T) {
 func TestAdd_DirTrailingSlash(t *testing.T) {
 	env := newTestEnv(t)
 	env.srv.AddProject("abc12", "Test Project")
-	env.writeFile("gosf.toml", "[project]\nid = \"abc12\"\n")
+	env.writeFile(".gosf/gosf.toml", "[project]\nid = \"abc12\"\n")
 	env.writeFile("data/dir/file.txt", "content")
 
 	// Trailing slash: dir name stripped, contents go directly under dest.
@@ -965,7 +965,7 @@ func TestAdd_DirTrailingSlash(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("add exit %d; stderr=%s", code, stderr)
 	}
-	toml := env.readFile("gosf.toml")
+	toml := env.readFile(".gosf/gosf.toml")
 	if !strings.Contains(toml, "/results/file.txt") {
 		t.Errorf("expected /results/file.txt (dir name stripped):\n%s", toml)
 	}
@@ -974,7 +974,7 @@ func TestAdd_DirTrailingSlash(t *testing.T) {
 func TestAdd_DirectionFlagRemoved(t *testing.T) {
 	env := newTestEnv(t)
 	env.srv.AddProject("abc12", "Test Project")
-	env.writeFile("gosf.toml", "[project]\nid = \"abc12\"\n")
+	env.writeFile(".gosf/gosf.toml", "[project]\nid = \"abc12\"\n")
 
 	_, _, code := env.run("add", "file.txt", "abc12:/file.txt", "--direction=pull")
 	if code == 0 {
@@ -985,7 +985,7 @@ func TestAdd_DirectionFlagRemoved(t *testing.T) {
 func TestAdd_AlreadyTracked(t *testing.T) {
 	env := newTestEnv(t)
 	env.srv.AddProject("abc12", "Test Project")
-	env.writeFile("gosf.toml", `[project]
+	env.writeFile(".gosf/gosf.toml", `[project]
 id = "abc12"
 
 [[files]]

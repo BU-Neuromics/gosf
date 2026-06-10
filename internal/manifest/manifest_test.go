@@ -283,7 +283,8 @@ func TestSave_Atomic(t *testing.T) {
 
 func TestFindManifest_InCwd(t *testing.T) {
 	dir := t.TempDir()
-	writeFile(t, dir, "gosf.toml", validTOML)
+	os.MkdirAll(filepath.Join(dir, ".gosf"), 0755)
+	writeFile(t, filepath.Join(dir, ".gosf"), "gosf.toml", validTOML)
 
 	// Temporarily change cwd.
 	origDir, _ := os.Getwd()
@@ -294,8 +295,8 @@ func TestFindManifest_InCwd(t *testing.T) {
 	if err != nil {
 		t.Fatalf("FindManifest: %v", err)
 	}
-	if manifestPath != filepath.Join(dir, "gosf.toml") {
-		t.Errorf("manifestPath = %q, want %q", manifestPath, filepath.Join(dir, "gosf.toml"))
+	if manifestPath != filepath.Join(dir, ".gosf", "gosf.toml") {
+		t.Errorf("manifestPath = %q, want %q", manifestPath, filepath.Join(dir, ".gosf", "gosf.toml"))
 	}
 	if repoRoot != dir {
 		t.Errorf("repoRoot = %q, want %q", repoRoot, dir)
@@ -304,7 +305,8 @@ func TestFindManifest_InCwd(t *testing.T) {
 
 func TestFindManifest_InParentDir(t *testing.T) {
 	root := t.TempDir()
-	writeFile(t, root, "gosf.toml", validTOML)
+	os.MkdirAll(filepath.Join(root, ".gosf"), 0755)
+	writeFile(t, filepath.Join(root, ".gosf"), "gosf.toml", validTOML)
 	subdir := filepath.Join(root, "deep", "nested")
 	os.MkdirAll(subdir, 0755)
 

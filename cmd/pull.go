@@ -28,10 +28,10 @@ var pullCmd = &cobra.Command{
 	Long: `Download files from an OSF project to a local destination.
 
 With no arguments, pulls all tracked files with direction=pull or direction=both
-from gosf.toml. Requires gosf.toml with [project].id set (run 'gosf init').
+from .gosf/gosf.toml. Requires .gosf/gosf.toml with [project].id set (run 'gosf init').
 
 With a path argument, downloads the specified file or folder and records it
-in gosf.toml (unless --no-track is set).
+in .gosf/gosf.toml (unless --no-track is set).
 
 Path rules follow scp conventions:
   gosf pull abc12:/data/file.csv             → ./data/file.csv
@@ -57,7 +57,7 @@ Path rules follow scp conventions:
 func runBarePull(ctx context.Context, osfClient *client.OSFClient, wb *client.WaterbutlerClient) error {
 	manifestPath, repoRoot, err := manifest.FindManifest()
 	if manifest.IsNotFound(err) {
-		return fmt.Errorf("no gosf.toml found — run: gosf init <project-id>")
+		return fmt.Errorf("no .gosf/gosf.toml found — run: gosf init <project-id>")
 	}
 	if err != nil {
 		return err
@@ -155,7 +155,7 @@ func runExplicitPull(cmd *cobra.Command, args []string, osfClient *client.OSFCli
 		}
 	}
 
-	// Load gosf.toml if present for duplicate-tracking check and auto-tracking.
+	// Load .gosf/gosf.toml if present for duplicate-tracking check and auto-tracking.
 	var m *manifest.Manifest
 	var manifestPath string
 	manifestCreated := false
@@ -169,12 +169,12 @@ func runExplicitPull(cmd *cobra.Command, args []string, osfClient *client.OSFCli
 		return findErr
 	}
 
-	// If no gosf.toml and tracking enabled, we'll create one.
+	// If no .gosf/.gosf/gosf.toml and tracking enabled, we'll create one.
 	if m == nil && !pullNoTrack {
 		if target.NodeID == "" {
 			return fmt.Errorf("no project configured — run: gosf init <project-id>")
 		}
-		manifestPath = "gosf.toml"
+		manifestPath = filepath.Join(".gosf", ".gosf/gosf.toml")
 		m = &manifest.Manifest{Project: manifest.ProjectConfig{ID: target.NodeID}}
 		manifestCreated = true
 	}
@@ -227,7 +227,7 @@ func runExplicitPull(cmd *cobra.Command, args []string, osfClient *client.OSFCli
 			}
 		}
 		if err := manifest.Save(s.manifest, s.manifestPath); err != nil {
-			return fmt.Errorf("updating gosf.toml: %w", err)
+			return fmt.Errorf("updating .gosf/gosf.toml: %w", err)
 		}
 		_ = manifestCreated
 	}
@@ -381,6 +381,6 @@ func validateVersion(versions []client.FileVersion, n int) error {
 func init() {
 	pullCmd.Flags().BoolVar(&pullDryRun, "dry-run", false, "Show what would be downloaded without downloading")
 	pullCmd.Flags().IntVar(&pullVersion, "version", 0, "Download a specific version number (0 = latest)")
-	pullCmd.Flags().BoolVar(&pullNoTrack, "no-track", false, "Download without recording in gosf.toml")
+	pullCmd.Flags().BoolVar(&pullNoTrack, "no-track", false, "Download without recording in .gosf/gosf.toml")
 	rootCmd.AddCommand(pullCmd)
 }
