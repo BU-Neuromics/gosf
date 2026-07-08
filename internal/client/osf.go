@@ -364,9 +364,14 @@ func (c *OSFClient) UpdateNode(ctx context.Context, nodeID string, attrs UpdateN
 	return &result.Data, nil
 }
 
-// GetFileVersions returns all versions of a file, newest-first, with embedded user info.
+// GetFileVersions returns all versions of a file, newest-first.
+//
+// Note: the OSF v2 versions endpoint does not expose a user relationship and
+// rejects ?embed=user with a 400 ("The following fields are not embeddable:
+// user"), so no embed is requested. Contributor info is therefore unavailable
+// from this endpoint unless the response happens to carry embedded user data.
 func (c *OSFClient) GetFileVersions(ctx context.Context, fileID string) ([]FileVersion, error) {
-	url := fmt.Sprintf("%s/files/%s/versions/?embed=user", c.baseURL, fileID)
+	url := fmt.Sprintf("%s/files/%s/versions/", c.baseURL, fileID)
 	return c.listVersionsFromURL(ctx, url)
 }
 

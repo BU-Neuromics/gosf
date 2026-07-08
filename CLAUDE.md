@@ -54,7 +54,7 @@ Key endpoints:
 - `GET /nodes/{id}/files/osfstorage/` — list files at root
 - `GET /nodes/{id}/files/osfstorage/?path=/subdir/` — list files in subdir
 - `GET /files/{file_id}/` — file metadata (includes download link)
-- `GET /files/{file_id}/versions/?embed=user` — all versions, newest-first, with embedded user
+- `GET /files/{file_id}/versions/` — all versions, newest-first (no `embed=user`: the OSF versions endpoint has no embeddable user relationship and returns 400 if one is requested)
 
 ### Tier 2 — Waterbutler (actual file bytes)
 
@@ -499,9 +499,12 @@ Strip the `Authorization` header when following redirects to a different host.
 Every PUT to an existing file's `links.upload` URL creates a new numbered version.
 Versions are immutable once created.
 
-`GetFileVersions(fileID)` calls `GET /v2/files/{id}/versions/?embed=user` and returns
-`[]FileVersion` sorted newest-first. Each `FileVersion` embeds the contributor's user
-object; `FileVersion.Contributor()` resolves to `email_primary` → `full_name` → GUID.
+`GetFileVersions(fileID)` calls `GET /v2/files/{id}/versions/` and returns
+`[]FileVersion` sorted newest-first. The OSF versions endpoint does not expose a
+user relationship (requesting `embed=user` returns a 400), so contributor info is
+generally unavailable from this endpoint; `FileVersion.Contributor()` resolves to
+`email_primary` → `full_name` → GUID when embedded user data happens to be present,
+and returns an empty string otherwise.
 
 `RevisionURL(downloadURL, n)` appends `?revision=n` to a Waterbutler download URL,
 fetching a specific historical version. Used by `pull --version=<n>`.
