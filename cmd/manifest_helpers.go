@@ -29,6 +29,21 @@ func computeLocalMD5(path string) (string, error) {
 	return fmt.Sprintf("%x", h.Sum(nil)), nil
 }
 
+// localFileMatches reports whether the file at path exists and its MD5 equals
+// remoteMD5. Used to make transfers idempotent: an identical local copy means
+// there is nothing to download (or upload). A missing file, unreadable file, or
+// empty remoteMD5 all report false (i.e. "not known-identical, proceed").
+func localFileMatches(path, remoteMD5 string) bool {
+	if remoteMD5 == "" {
+		return false
+	}
+	localMD5, err := computeLocalMD5(path)
+	if err != nil || localMD5 == "" {
+		return false
+	}
+	return localMD5 == remoteMD5
+}
+
 // fileVersionsToRemote converts client.FileVersion slice to manifest.RemoteVersion slice.
 func fileVersionsToRemote(versions []client.FileVersion) []manifest.RemoteVersion {
 	if versions == nil {

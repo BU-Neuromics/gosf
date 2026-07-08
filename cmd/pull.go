@@ -20,6 +20,8 @@ var (
 	pullDryRun  bool
 	pullVersion int
 	pullNoTrack bool
+	pullForce   bool
+	pullResolve string
 )
 
 var pullCmd = &cobra.Command{
@@ -42,6 +44,9 @@ Path rules follow scp conventions:
 	Args:         cobra.RangeArgs(0, 2),
 	SilenceUsage: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if err := validateResolve(pullResolve); err != nil {
+			return err
+		}
 		token := config.LoadToken(flagToken)
 		osfClient := client.New(token)
 		wb := client.NewWaterbutler(token)
@@ -89,19 +94,19 @@ func runBarePull(ctx context.Context, osfClient *client.OSFClient, wb *client.Wa
 
 		var remoteVersions []manifest.RemoteVersion
 		var resolvedItem *client.FileItem
-		if entry.Version > 0 {
-			item, resolveErr := res.Resolve(ctx, proj, entry.Remote)
-			if resolveErr == nil {
-				resolvedItem = &item
-				fvs, fetchErr := osfClient.GetFileVersions(ctx, item.ID)
-				if fetchErr == nil {
-					remoteVersions = fileVersionsToRemote(fvs)
-				}
+		// Resolve every pull entry (including unpinned ones) so content can be
+		// compared and a download URL is available.
+		item, resolveErr := res.Resolve(ctx, proj, entry.Remote)
+		if resolveErr == nil {
+			resolvedItem = &item
+			fvs, fetchErr := osfClient.GetFileVersions(ctx, item.ID)
+			if fetchErr == nil {
+				remoteVersions = fileVersionsToRemote(fvs)
 			}
 		}
 
 		state := manifest.ClassifyFile(*entry, localMD5, remoteVersions, false)
-		action, changed, err := processPullEntry(ctx, entry, proj, localAbs, state, resolvedItem, wb, osfClient, repoRoot, quiet, jsonMode, pullDryRun, false)
+		action, changed, err := processPullEntry(ctx, entry, proj, localAbs, localMD5, state, resolvedItem, wb, osfClient, repoRoot, quiet, jsonMode, pullDryRun, pullForce, pullResolve, remoteVersions)
 		if err != nil {
 			return err
 		}
@@ -139,7 +144,7 @@ func runExplicitPull(cmd *cobra.Command, args []string, osfClient *client.OSFCli
 	res := resolver.New(osfClient)
 	items, err := res.ListDir(cmd.Context(), target.NodeID, target.Path)
 	if err != nil {
-		return err
+		return friendlyAuthError(err)
 	}
 
 	if pullVersion > 0 {
@@ -169,12 +174,12 @@ func runExplicitPull(cmd *cobra.Command, args []string, osfClient *client.OSFCli
 		return findErr
 	}
 
-	// If no .gosf/.gosf/gosf.toml and tracking enabled, we'll create one.
+	// If no .gosf/gosf.toml and tracking enabled, we'll create one.
 	if m == nil && !pullNoTrack {
 		if target.NodeID == "" {
 			return fmt.Errorf("no project configured — run: gosf init <project-id>")
 		}
-		manifestPath = filepath.Join(".gosf", ".gosf/gosf.toml")
+		manifestPath = filepath.Join(".gosf", "gosf.toml")
 		m = &manifest.Manifest{Project: manifest.ProjectConfig{ID: target.NodeID}}
 		manifestCreated = true
 	}
@@ -316,20 +321,31 @@ func (s *pullSession) file(item client.FileItem, destPath string) error {
 		return nil
 	}
 
-	if item.Links.Download == "" {
-		return fmt.Errorf("no download URL for %q", item.Attributes.Name)
+	// Idempotent skip: if the destination already holds byte-identical content
+	// there is nothing to transfer. Only applies when fetching the latest
+	// version (item hashes describe the latest, not a requested revision).
+	identical := s.version == 0 && localFileMatches(destPath, item.Attributes.Extra.Hashes.MD5)
+	if identical {
+		if !s.quiet && !s.jsonMode {
+			fmt.Fprintf(os.Stderr, "≡  %s (identical, skipped)\n", destPath)
+		}
+		s.result.Add(destPath, item.Attributes.Size)
+	} else {
+		if item.Links.Download == "" {
+			return fmt.Errorf("no download URL for %q", item.Attributes.Name)
+		}
+		if err := os.MkdirAll(filepath.Dir(destPath), 0755); err != nil {
+			return fmt.Errorf("creating destination directory: %w", err)
+		}
+		dlURL := item.Links.Download
+		if s.version > 0 {
+			dlURL = client.RevisionURL(dlURL, s.version)
+		}
+		if err := s.wb.Download(s.ctx, dlURL, destPath, item.Attributes.Size, s.quiet); err != nil {
+			return err
+		}
+		s.result.Add(destPath, item.Attributes.Size)
 	}
-	if err := os.MkdirAll(filepath.Dir(destPath), 0755); err != nil {
-		return fmt.Errorf("creating destination directory: %w", err)
-	}
-	dlURL := item.Links.Download
-	if s.version > 0 {
-		dlURL = client.RevisionURL(dlURL, s.version)
-	}
-	if err := s.wb.Download(s.ctx, dlURL, destPath, item.Attributes.Size, s.quiet); err != nil {
-		return err
-	}
-	s.result.Add(destPath, item.Attributes.Size)
 
 	// Auto-track.
 	if trackThis {
@@ -405,5 +421,7 @@ func init() {
 	pullCmd.Flags().BoolVar(&pullDryRun, "dry-run", false, "Show what would be downloaded without downloading")
 	pullCmd.Flags().IntVar(&pullVersion, "version", 0, "Download a specific version number (0 = latest)")
 	pullCmd.Flags().BoolVar(&pullNoTrack, "no-track", false, "Download without recording in .gosf/gosf.toml")
+	pullCmd.Flags().BoolVar(&pullForce, "force", false, "Overwrite locally-modified files with the pinned version")
+	pullCmd.Flags().StringVar(&pullResolve, "resolve", "", "Resolve divergence by taking remote: 'theirs'")
 	rootCmd.AddCommand(pullCmd)
 }

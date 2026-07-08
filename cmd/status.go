@@ -55,8 +55,12 @@ var statusCmd = &cobra.Command{
 				return fmt.Errorf("computing MD5 for %s: %w", entry.Local, err)
 			}
 
+			// Fetch remote versions even for unpinned (version=0) entries so an
+			// entry that is already byte-identical to the remote is reported as
+			// content-in-sync rather than a blanket "never pushed". Status is
+			// read-only: it reports, it never mutates the manifest.
 			var remoteVersions []manifest.RemoteVersion
-			if !statusNoCheckRemote && entry.Version > 0 {
+			if !statusNoCheckRemote {
 				proj := entry.ResolveProject(m.Project.ID)
 				item, resolveErr := res.Resolve(cmd.Context(), proj, entry.Remote)
 				if resolveErr == nil {
@@ -68,7 +72,7 @@ var statusCmd = &cobra.Command{
 			}
 
 			state := manifest.ClassifyFile(entry, localMD5, remoteVersions, statusNoCheckRemote)
-			if state != manifest.StateInSync {
+			if !statusIsInSync(state) {
 				allInSync = false
 			}
 
@@ -117,9 +121,21 @@ func stateDisplay(state manifest.FileState, entry manifest.Entry, remoteVersions
 		return "↑", fmt.Sprintf("remote has v%d", latest)
 	case manifest.StateNotPushed:
 		return "·", "never pushed"
+	case manifest.StatePinOnly:
+		latest := latestRemoteVersion(remoteVersions)
+		return "≡", fmt.Sprintf("identical to remote v%d, unpinned — run sync to pin", latest)
+	case manifest.StateDivergent:
+		return "DIVERGED", fmt.Sprintf("local and remote both changed since v%d — resolve with --resolve", entry.Version)
 	default:
 		return "?", ""
 	}
+}
+
+// statusIsInSync reports whether a state should count as fully in sync for the
+// CI-friendly exit code. Only IN_SYNC is fully in sync; PIN_ONLY (content
+// matches but the manifest pin is stale) and everything else signal work to do.
+func statusIsInSync(state manifest.FileState) bool {
+	return state == manifest.StateInSync
 }
 
 func verLabel(version int) string {

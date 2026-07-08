@@ -35,7 +35,7 @@ Examples:
 
 		items, err := res.ListDir(cmd.Context(), target.NodeID, target.Path)
 		if err != nil {
-			return err
+			return friendlyAuthError(err)
 		}
 
 		if flagOutput == "json" {

@@ -157,6 +157,23 @@ func (s *Server) AddFile(projectID, filePath string, content []byte) *File {
 	return s.addFileLocked(projectID, filePath, content)
 }
 
+// AddVersion appends a new version to an existing file (creating the file if it
+// does not exist) and returns it. Test-only helper for building multi-version
+// remote states (remote-newer, divergence).
+func (s *Server) AddVersion(projectID, filePath string, content []byte) *File {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	proj := s.projects[projectID]
+	f := proj.byPath[filePath]
+	if f == nil {
+		return s.addFileLocked(projectID, filePath, content)
+	}
+	h := md5.Sum(content)
+	next := f.Versions[len(f.Versions)-1].num + 1
+	f.Versions = append(f.Versions, fileVer{num: next, content: content, md5: fmt.Sprintf("%x", h[:])})
+	return f
+}
+
 func (s *Server) addFileLocked(projectID, filePath string, content []byte) *File {
 	proj := s.projects[projectID]
 	h := md5.Sum(content)
