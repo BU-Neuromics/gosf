@@ -21,6 +21,9 @@ var (
 	pushConflict      string
 	pushNoTrack       bool
 	pushNoCheckRemote bool
+	pushForce         bool
+	pushYes           bool
+	pushResolve       string
 )
 
 var pushCmd = &cobra.Command{
@@ -47,6 +50,9 @@ Examples:
 	Args:         cobra.RangeArgs(0, 2),
 	SilenceUsage: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if err := validateResolve(pushResolve); err != nil {
+			return err
+		}
 		if len(args) == 0 {
 			return runBarePush(cmd)
 		}
@@ -94,7 +100,7 @@ Examples:
 				mfPath = mfPathFound
 			}
 		} else if manifest.IsNotFound(findErr) && !pushNoTrack {
-			mfPath = filepath.Join(".gosf", ".gosf/gosf.toml")
+			mfPath = filepath.Join(".gosf", "gosf.toml")
 			mf = &manifest.Manifest{Project: manifest.ProjectConfig{ID: target.NodeID}}
 		}
 
@@ -171,6 +177,8 @@ func runBarePush(cmd *cobra.Command) error {
 	jsonResults := make([]output.SyncItem, 0)
 	manifestChanged := false
 
+	// Pass 1: classify every push-eligible entry (no transfers yet).
+	plans := make([]entryPlan, 0, len(m.Files))
 	for i := range m.Files {
 		entry := &m.Files[i]
 		if entry.Direction != "push" && entry.Direction != "both" {
@@ -185,7 +193,7 @@ func runBarePush(cmd *cobra.Command) error {
 		}
 
 		var remoteVersions []manifest.RemoteVersion
-		if !pushNoCheckRemote && entry.Version > 0 {
+		if !pushNoCheckRemote {
 			if item, resolveErr := res.Resolve(cmd.Context(), proj, entry.Remote); resolveErr == nil {
 				if fvs, fetchErr := osfClient.GetFileVersions(cmd.Context(), item.ID); fetchErr == nil {
 					remoteVersions = fileVersionsToRemote(fvs)
@@ -194,7 +202,45 @@ func runBarePush(cmd *cobra.Command) error {
 		}
 
 		state := manifest.ClassifyFile(*entry, localMD5, remoteVersions, pushNoCheckRemote)
-		action, changed, err := processPushEntry(cmd.Context(), entry, proj, localAbs, state, res, wb, osfClient, quiet, jsonMode, pushDryRun)
+		plans = append(plans, entryPlan{
+			entry: entry, proj: proj, localAbs: localAbs, localMD5: localMD5,
+			state: state, remoteVersions: remoteVersions, treatAsPush: true,
+		})
+	}
+
+	// Pre-flight: divergence and unauthorized rollbacks fail before any prompt.
+	if err := preflightPush(plans, pushForce, pushResolve); err != nil {
+		return err
+	}
+
+	// Confirmation gate. A push that writes remote bytes must be confirmed
+	// unless --yes/--force (or --quiet). In JSON mode --force is mandatory so a
+	// non-interactive run can never hang on a prompt (same rule as `gosf rm`).
+	states := make([]manifest.FileState, len(plans))
+	for i, p := range plans {
+		states[i] = p.state
+	}
+	if needsPushConfirmation(states) && !pushYes && !pushForce && !pushDryRun {
+		if jsonMode {
+			return fmt.Errorf("push in --output=json mode requires --force (no interactive confirmation available)")
+		}
+		node, _ := osfClient.GetNode(cmd.Context(), m.Project.ID)
+		printPushPlan(os.Stderr, node, m.Project.ID, plans, states)
+		if !isInteractive() {
+			return fmt.Errorf("refusing to push without confirmation (no TTY); pass --yes to confirm or --force")
+		}
+		if !confirm("Proceed with push?") {
+			fmt.Fprintln(os.Stderr, "Aborted.")
+			return nil
+		}
+	} else if !quiet && !jsonMode {
+		node, _ := osfClient.GetNode(cmd.Context(), m.Project.ID)
+		printPushPlan(os.Stderr, node, m.Project.ID, plans, states)
+	}
+
+	// Pass 2: execute.
+	for _, p := range plans {
+		action, changed, err := processPushEntry(cmd.Context(), p.entry, p.proj, p.localAbs, p.localMD5, p.state, res, wb, osfClient, quiet, jsonMode, pushDryRun, pushForce, pushResolve, p.remoteVersions)
 		if err != nil {
 			return err
 		}
@@ -202,7 +248,7 @@ func runBarePush(cmd *cobra.Command) error {
 			manifestChanged = true
 		}
 		if jsonMode {
-			jsonResults = append(jsonResults, makeSyncItem(entry, state, action, remoteVersions))
+			jsonResults = append(jsonResults, makeSyncItem(p.entry, p.state, action, p.remoteVersions))
 		}
 	}
 
@@ -213,6 +259,32 @@ func runBarePush(cmd *cobra.Command) error {
 	}
 	if jsonMode {
 		return output.PrintJSON(os.Stdout, jsonResults)
+	}
+	return nil
+}
+
+// preflightPush fails hard on any entry that has diverged (without --resolve=ours)
+// or that would perform an unauthorized remote-newer rollback (without --force),
+// before any transfer or prompt.
+func preflightPush(plans []entryPlan, force bool, resolve string) error {
+	var blocked []string
+	for _, p := range plans {
+		switch p.state {
+		case manifest.StateDivergent:
+			if resolve != "ours" {
+				blocked = append(blocked, divergenceError(*p.entry, p.proj, p.localMD5, p.remoteVersions).Error())
+			}
+		case manifest.StateRemoteNewer, manifest.StateBehind:
+			if !force {
+				latest := latestRemoteVersionInfo(p.remoteVersions)
+				blocked = append(blocked, fmt.Sprintf(
+					"push refused: %s would roll the remote back over v%d (pinned v%d); pass --force to overwrite deliberately",
+					p.entry.Local, latest.Version, p.entry.Version))
+			}
+		}
+	}
+	if len(blocked) > 0 {
+		return fmt.Errorf("%s", strings.Join(blocked, "\n\n"))
 	}
 	return nil
 }
@@ -275,6 +347,19 @@ func (s *pushSession) file(srcPath, nodeID, destPath string) error {
 				return fmt.Errorf("push refused: %s:%s is already tracked to %q — edit .gosf/gosf.toml to change",
 					nodeID, destFull, s.manifest.Files[idx].Local)
 			}
+		}
+	}
+
+	// Idempotent overwrite: if the target already holds identical bytes, skip
+	// rather than mint a redundant remote version.
+	if existingItem != nil && plan.action == "overwrite" {
+		localMD5, _ := computeLocalMD5(srcPath)
+		if redundantOverwrite(plan.action, localMD5, existingItem.Attributes.Extra.Hashes.MD5) {
+			s.result.Add(destFull, "skip")
+			if !s.jsonMode && !s.quiet {
+				fmt.Fprintf(os.Stderr, "≡  %s (identical, skipped)\n", destFull)
+			}
+			return nil
 		}
 	}
 
@@ -354,6 +439,14 @@ func (s *pushSession) dir(srcDir, nodeID, destPath string) error {
 		osfDest := filepath.ToSlash(filepath.Join(destPath, rel))
 		return s.file(path, nodeID, osfDest)
 	})
+}
+
+// redundantOverwrite reports whether an "overwrite" upload would merely re-mint
+// an identical remote version (local content already equals the remote content).
+// Such an overwrite is skipped to keep push idempotent. It does not apply to
+// "rename" (a deliberate duplicate) or "skip" (already handled).
+func redundantOverwrite(action, localMD5, remoteMD5 string) bool {
+	return action == "overwrite" && localMD5 != "" && localMD5 == remoteMD5
 }
 
 // uploadPlan describes how a single file upload should be carried out.
@@ -453,5 +546,8 @@ func init() {
 	pushCmd.Flags().StringVar(&pushConflict, "conflict", "skip", "Conflict resolution: skip, overwrite, or rename")
 	pushCmd.Flags().BoolVar(&pushNoTrack, "no-track", false, "Upload without recording in .gosf/gosf.toml")
 	pushCmd.Flags().BoolVar(&pushNoCheckRemote, "no-check-remote", false, "Skip remote version lookups for bare push")
+	pushCmd.Flags().BoolVar(&pushForce, "force", false, "Bypass the confirmation prompt and authorize remote-newer rollbacks")
+	pushCmd.Flags().BoolVar(&pushYes, "yes", false, "Bypass the confirmation prompt for safe pushes (new files, updates)")
+	pushCmd.Flags().StringVar(&pushResolve, "resolve", "", "Resolve divergence by taking local: 'ours'")
 	rootCmd.AddCommand(pushCmd)
 }

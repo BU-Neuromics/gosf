@@ -485,7 +485,9 @@ version = 0
 md5 = ""
 `)
 
-	_, stderr, code := env.run("push", "--quiet")
+	// Bare push writes remote bytes, so it now requires an explicit confirmation
+	// bypass in non-interactive use (--yes for a safe new-file push).
+	_, stderr, code := env.run("push", "--yes", "--quiet")
 	if code != 0 {
 		t.Fatalf("bare push exit %d; stderr=%s", code, stderr)
 	}
@@ -1662,5 +1664,211 @@ func TestCp_JSON(t *testing.T) {
 	}
 	if result["src"] == nil || result["dest"] == nil {
 		t.Errorf("expected src and dest in result: %v", result)
+	}
+}
+
+// ---- Epic #38: state-based sync safety ----
+
+// TestPull_IdempotentWhenLocalIdentical is the keystone: pulling files that are
+// already present locally and byte-identical to the remote performs no download,
+// records a pull-pinned manifest entry, and leaves status reporting IN_SYNC.
+func TestPull_IdempotentWhenLocalIdentical(t *testing.T) {
+	env := newTestEnv(t)
+	env.srv.AddProject("z2qm3", "Clade Study")
+	a := "gene,count\nA,5\n"
+	b := "gene,count\nB,7\n"
+	env.srv.AddFile("z2qm3", "/clade/a.csv", []byte(a))
+	env.srv.AddFile("z2qm3", "/clade/b.csv", []byte(b))
+	// Pre-place identical local copies at the destination.
+	env.writeFile("ml/clade/a.csv", a)
+	env.writeFile("ml/clade/b.csv", b)
+
+	_, stderr, code := env.run("pull", "z2qm3:/clade/", "ml/clade/")
+	if code != 0 {
+		t.Fatalf("pull exit %d; stderr=%s", code, stderr)
+	}
+	if !strings.Contains(stderr, "identical") {
+		t.Errorf("expected an identical-skip note, stderr=%q", stderr)
+	}
+	if env.readFile("ml/clade/a.csv") != a {
+		t.Error("a.csv content changed unexpectedly")
+	}
+	mani := env.readFile(".gosf/gosf.toml")
+	for _, want := range []string{"ml/clade/a.csv", "ml/clade/b.csv", "pull"} {
+		if !strings.Contains(mani, want) {
+			t.Errorf("manifest missing %q:\n%s", want, mani)
+		}
+	}
+	if strings.Contains(mani, "version = 0") {
+		t.Errorf("entries should be pinned to a non-zero version:\n%s", mani)
+	}
+	out2, err2, code2 := env.run("status")
+	if code2 != 0 {
+		t.Fatalf("status exit %d, want 0 (all in sync); stdout=%s stderr=%s", code2, out2, err2)
+	}
+}
+
+// TestStatus_UnpinnedContentMatchIsPinOnly verifies status content-compares an
+// unpinned (version=0) entry against the remote instead of reporting NOT_PUSHED.
+func TestStatus_UnpinnedContentMatchIsPinOnly(t *testing.T) {
+	env := newTestEnv(t)
+	env.srv.AddProject("abc12", "Test Project")
+	env.srv.AddFile("abc12", "/inputs/x.csv", []byte("payload"))
+	env.writeFile("inputs/x.csv", "payload")
+	env.writeFile(".gosf/gosf.toml", `[project]
+id = "abc12"
+
+[[files]]
+local     = "inputs/x.csv"
+remote    = "/inputs/x.csv"
+direction = "pull"
+version   = 0
+md5       = ""
+`)
+
+	stdout, _, code := env.run("status", "--output=json")
+	if code != 1 {
+		t.Fatalf("status exit %d, want 1 (pin needed); stdout=%s", code, stdout)
+	}
+	var items []map[string]any
+	if err := json.Unmarshal([]byte(stdout), &items); err != nil {
+		t.Fatalf("parse JSON: %v\n%s", err, stdout)
+	}
+	if len(items) != 1 || items[0]["state"] != "PIN_ONLY" {
+		t.Errorf("state = %v, want PIN_ONLY", items)
+	}
+}
+
+// TestSync_PinsUnpinnedIdentical verifies sync records the pin for a byte-identical
+// unpinned entry without uploading anything.
+func TestSync_PinsUnpinnedIdentical(t *testing.T) {
+	env := newTestEnv(t)
+	env.srv.AddProject("abc12", "Test Project")
+	env.srv.AddFile("abc12", "/inputs/x.csv", []byte("payload"))
+	env.writeFile("inputs/x.csv", "payload")
+	env.writeFile(".gosf/gosf.toml", `[project]
+id = "abc12"
+
+[[files]]
+local     = "inputs/x.csv"
+remote    = "/inputs/x.csv"
+direction = "both"
+version   = 0
+md5       = ""
+`)
+
+	_, stderr, code := env.run("sync")
+	if code != 0 {
+		t.Fatalf("sync exit %d; stderr=%s", code, stderr)
+	}
+	if len(env.srv.Uploads()) != 0 {
+		t.Errorf("sync uploaded %d files; expected 0 (content identical)", len(env.srv.Uploads()))
+	}
+	mani := env.readFile(".gosf/gosf.toml")
+	if strings.Contains(mani, "version = 0") {
+		t.Errorf("entry should be pinned after sync:\n%s", mani)
+	}
+}
+
+// TestSync_RemoteNewerFastForwardPull advances a pull entry to the latest remote
+// version when only the remote moved.
+func TestSync_RemoteNewerFastForwardPull(t *testing.T) {
+	env := newTestEnv(t)
+	env.srv.AddProject("abc12", "Test Project")
+	f := env.srv.AddFile("abc12", "/data.csv", []byte("v1-content"))
+	env.srv.AddVersion("abc12", "/data.csv", []byte("v2-content"))
+	env.writeFile("data.csv", "v1-content")
+	env.writeFile(".gosf/gosf.toml", fmt.Sprintf(`[project]
+id = "abc12"
+
+[[files]]
+local     = "data.csv"
+remote    = "/data.csv"
+direction = "pull"
+version   = 1
+md5       = "%s"
+`, f.VersionMD5(1)))
+
+	_, stderr, code := env.run("sync")
+	if code != 0 {
+		t.Fatalf("sync exit %d; stderr=%s", code, stderr)
+	}
+	if got := env.readFile("data.csv"); got != "v2-content" {
+		t.Errorf("expected fast-forward to v2 content, got %q", got)
+	}
+	mani := env.readFile(".gosf/gosf.toml")
+	if !strings.Contains(mani, "version = 2") {
+		t.Errorf("expected re-pin to v2:\n%s", mani)
+	}
+}
+
+// TestSync_DivergenceFailsHard refuses to transfer when both sides changed since
+// the baseline, and names both --resolve options.
+func TestSync_DivergenceFailsHard(t *testing.T) {
+	env := newTestEnv(t)
+	env.srv.AddProject("abc12", "Test Project")
+	f := env.srv.AddFile("abc12", "/species.csv", []byte("baseline"))
+	env.srv.AddVersion("abc12", "/species.csv", []byte("remote-edit"))
+	env.writeFile("species.csv", "local-edit")
+	env.writeFile(".gosf/gosf.toml", fmt.Sprintf(`[project]
+id = "abc12"
+
+[[files]]
+local     = "species.csv"
+remote    = "/species.csv"
+direction = "both"
+version   = 1
+md5       = "%s"
+`, f.VersionMD5(1)))
+
+	_, stderr, code := env.run("sync")
+	if code == 0 {
+		t.Fatalf("sync should fail hard on divergence; stderr=%s", stderr)
+	}
+	if !strings.Contains(stderr, "divergence") || !strings.Contains(stderr, "--resolve=theirs") {
+		t.Errorf("expected divergence diagnostic with resolve options; stderr=%s", stderr)
+	}
+	if len(env.srv.Uploads()) != 0 {
+		t.Error("divergence must not upload anything")
+	}
+	if env.readFile("species.csv") != "local-edit" {
+		t.Error("local file must be left untouched on divergence")
+	}
+}
+
+// TestPush_JSONRequiresForce verifies a push writing remote bytes in JSON mode
+// refuses without --force (no prompt possible), mirroring `gosf rm`.
+func TestPush_JSONRequiresForce(t *testing.T) {
+	env := newTestEnv(t)
+	env.srv.AddProject("abc12", "Test Project")
+	env.writeFile("new.csv", "brand new content")
+	env.writeFile(".gosf/gosf.toml", `[project]
+id = "abc12"
+
+[[files]]
+local     = "new.csv"
+remote    = "/new.csv"
+direction = "push"
+version   = 0
+md5       = ""
+`)
+
+	_, stderr, code := env.run("push", "--output=json")
+	if code == 0 {
+		t.Fatalf("push --output=json without --force should fail; stderr=%s", stderr)
+	}
+	if !strings.Contains(stderr, "--force") {
+		t.Errorf("error should mention --force; stderr=%s", stderr)
+	}
+	if len(env.srv.Uploads()) != 0 {
+		t.Error("no upload should occur when the confirmation gate blocks")
+	}
+
+	_, stderr2, code2 := env.run("push", "--output=json", "--force")
+	if code2 != 0 {
+		t.Fatalf("push --force exit %d; stderr=%s", code2, stderr2)
+	}
+	if len(env.srv.Uploads()) != 1 {
+		t.Errorf("expected 1 upload with --force, got %d", len(env.srv.Uploads()))
 	}
 }

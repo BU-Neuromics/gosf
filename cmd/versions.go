@@ -40,7 +40,7 @@ Examples:
 
 		item, err := res.Resolve(cmd.Context(), target.NodeID, target.Path)
 		if err != nil {
-			return err
+			return friendlyAuthError(err)
 		}
 		if item.Attributes.Kind == "folder" {
 			return fmt.Errorf("%q is a folder; versions only applies to files", target.Path)

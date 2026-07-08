@@ -85,8 +85,11 @@ gosf/
 │   ├── open.go
 │   ├── add.go               # gosf add — add entry to .gosf/gosf.toml
 │   ├── status.go            # gosf status — show manifest sync status
-│   ├── sync.go              # gosf sync — push/pull according to manifest
-│   └── manifest_helpers.go  # computeLocalMD5, fileVersionsToRemote, latestRemoteVersion
+│   ├── sync.go              # gosf sync — push/pull; processPushEntry/processPullEntry gates
+│   ├── gate.go              # state-based safety: divergenceError, entryPlan, push-plan helpers
+│   ├── prompt.go            # printPushPlan, confirmation/TTY helpers
+│   ├── auth_helpers.go      # friendlyAuthError (401/403 → auth hint)
+│   └── manifest_helpers.go  # computeLocalMD5, localFileMatches, fileVersionsToRemote, latestRemoteVersion
 ├── internal/
 │   ├── client/
 │   │   ├── osf.go          # JSON:API metadata client
@@ -219,18 +222,57 @@ Validation on load:
 
 ### File states
 
-`ClassifyFile(entry, localMD5, remoteVersions, noCheckRemote)` in `internal/manifest/status.go`:
+`ClassifyFile(entry, localMD5, remoteVersions, noCheckRemote)` in `internal/manifest/status.go`
+compares three values — **L** = local, **B** = pinned baseline (`version`+`md5`),
+**R** = remote latest — and reports how many sides diverged from the baseline:
 
 | State              | Meaning |
 |--------------------|---------|
-| `IN_SYNC`          | Local MD5 matches declared version's MD5 |
+| `IN_SYNC`          | L = B, R = B |
 | `MISSING`          | Local file does not exist |
 | `BEHIND`           | Local MD5 matches an older remote version (safe to pull) |
-| `AHEAD_OF_MANIFEST`| Local MD5 doesn't match any remote version (locally modified or unpushed) |
-| `REMOTE_NEWER`     | In sync with manifest but remote has newer versions beyond the pin |
-| `NOT_PUSHED`       | version = 0 |
+| `AHEAD_OF_MANIFEST`| L ≠ B, R = B — only local moved (a real local update) |
+| `REMOTE_NEWER`     | L = B, R ≠ B — only remote moved (safe fast-forward for pull) |
+| `PIN_ONLY`         | Local content already equals remote latest but the pin is stale/absent → record the pin, **no transfer** |
+| `DIVERGED`         | L ≠ B **and** R ≠ B and local matches no remote version → unsafe, fail hard |
+| `NOT_PUSHED`       | version = 0 **and** the remote path does not exist |
 
-When `--no-check-remote`: only IN_SYNC, MISSING, AHEAD_OF_MANIFEST, NOT_PUSHED are possible.
+Unpinned entries (version = 0) are **content-compared** against the remote when it
+exists, so an already-identical file classifies as `PIN_ONLY` (not `NOT_PUSHED`).
+`NOT_PUSHED` now means only "version = 0 and nothing on the remote to compare".
+
+When `--no-check-remote`: only IN_SYNC, MISSING, AHEAD_OF_MANIFEST, NOT_PUSHED are
+possible (the remote-comparing states need network).
+
+### State-based safety (gate matrix)
+
+`direction` is a **default intent** (what `sync` does by default), not a lock.
+Safety comes from state-based gates at the moment of a destructive action, keyed
+on how many sides diverged from the baseline:
+
+| L vs B | R vs B | `push` | `pull` |
+|--------|--------|--------|--------|
+| L=B | R=B | no-op | no-op |
+| unpinned, L=R | — | pin, no transfer (`PIN_ONLY`) | pin, no transfer (`PIN_ONLY`) |
+| L≠B | R=B | real update (confirm) | would clobber local → skip unless `--force` |
+| L=B | R≠B | rollback → refuse unless `--force` | fast-forward (safe), re-pin |
+| L≠B | R≠B | `DIVERGED` → fail hard, `--resolve=ours` | `DIVERGED` → fail hard, `--resolve=theirs` |
+
+- **Idempotent transfers**: explicit `pull`/`push` skip the byte transfer when the
+  local file already matches the remote MD5 (`localFileMatches`,
+  `redundantOverwrite` in `cmd/`). Manifest-driven transfers pin without
+  transferring in the `PIN_ONLY` state (`pinEntry` in `cmd/sync.go`).
+- **`--force`** authorizes a remote-newer/behind rollback (a deliberate, unilateral
+  overwrite of a newer remote version). It does **not** cover divergence.
+- **`--yes`** bypasses the push confirmation prompt for *safe* actions (new file,
+  real update) without authorizing a rollback.
+- **`--resolve=ours|theirs`** is the only way through a `DIVERGED` entry: `ours`
+  takes local (push a new version), `theirs` takes remote (download + re-pin).
+  Divergence is detected in a pre-flight pass before any bytes move, so a bulk
+  `sync`/`push` never applies a partial, half-resolved state.
+- Helpers live in `cmd/gate.go` (`divergenceError`, `latestRemoteVersionInfo`,
+  `pushActionLabel`, `needsPushConfirmation`, `summarizePush`, `validateResolve`,
+  `entryPlan`) and `cmd/prompt.go` (`printPushPlan`, `isInteractive`).
 
 ### MD5 sourcing
 
@@ -263,32 +305,55 @@ gosf add <local-path> <project>:<remote-path> [--direction=push|pull|both]
 ### `gosf status` (`cmd/status.go`)
 
 - Computes local MD5 for each entry.
-- Fetches remote versions unless `--no-check-remote`.
+- Fetches remote versions unless `--no-check-remote` — **including for unpinned
+  (version = 0) entries**, so an already-identical file reports `PIN_ONLY` instead
+  of a blanket "never pushed". Status is **read-only**: it reports, never mutates.
 - Tabular output: DIR / STATUS / LOCAL PATH / VER / DETAIL.
-- Exit code 0 if all IN_SYNC; exit code 1 otherwise (CI-friendly).
+- Exit code 0 only if all entries are `IN_SYNC` (`statusIsInSync`); exit code 1
+  otherwise (CI-friendly). `PIN_ONLY` and `DIVERGED` count as not-in-sync.
 - `--output=json` emits array of `{path, direction, state, declared_version, remote_latest_version}`.
 
 ### `gosf sync` (`cmd/sync.go`)
 
-Default (no flags): push-eligible entries only (direction=push or both).
+Non-interactive by default: push-eligible entries (direction=push or both) push;
+pull-only entries (direction=pull) pull. Two passes — classify all, then a
+divergence/rollback **pre-flight** (fail hard before any transfer), then execute.
 
-| State              | Push action |
-|--------------------|-------------|
-| IN_SYNC            | Print ✓, skip |
-| AHEAD_OF_MANIFEST  | Push, update manifest |
-| NOT_PUSHED (exists)| Push, set manifest |
-| NOT_PUSHED (missing)| Print ·, skip |
-| MISSING            | Print ✗, skip |
-| BEHIND / REMOTE_NEWER | Push as new version, update manifest |
+| State              | Push action | Pull action |
+|--------------------|-------------|-------------|
+| IN_SYNC            | ✓ skip | ✓ skip |
+| PIN_ONLY           | pin, no transfer | pin, no transfer |
+| AHEAD_OF_MANIFEST  | push new version | skip unless `--force` (would clobber local) |
+| REMOTE_NEWER       | refuse unless `--force` (rollback) | fast-forward + re-pin |
+| BEHIND             | refuse unless `--force` (rollback) | download baseline / advance |
+| NOT_PUSHED (exists)| push, set manifest | · skip |
+| MISSING            | ✗ skip | download + pin |
+| DIVERGED           | fail hard, `--resolve=ours` | fail hard, `--resolve=theirs` |
 
-`--pull-new`: additionally pulls pull-eligible (direction=pull or both) MISSING and BEHIND entries.
-
-Flags: `--pull-new`, `--force` (overwrite AHEAD_OF_MANIFEST on pull), `--dry-run`, `--no-check-remote`.
+Flags: `--force`, `--resolve=ours|theirs`, `--dry-run`, `--no-check-remote`.
 
 ### `gosf push` manifest integration
 
-- If .gosf/gosf.toml exists and the pushed path has `direction=pull` → refuse push before any network call.
-- After a successful push, if the entry has `direction=push` or `both` and `UploadResult.Version > 0` → update manifest atomically.
+- **Bare `gosf push`** (manifest-driven) runs classify → pre-flight → confirm →
+  execute. A push that writes remote bytes (new file / new version) prints a rich
+  per-file plan (header with project title + PUBLIC/PRIVATE and a loud warning when
+  public, per-file `local → remote` + action + size + MD5, and a summary line) and
+  prompts for confirmation on a TTY. `--yes`/`--force` bypass the prompt; in
+  `--output=json` mode `--force` is **mandatory** (same rule as `gosf rm`), and a
+  non-TTY run without `--yes`/`--force` refuses rather than hang.
+- **Explicit `gosf push <src> <project>:<path>`** keeps the `--conflict`
+  behavior; it additionally skips an overwrite that would merely re-mint identical
+  bytes, and still refuses when the tracked entry has `direction=pull`.
+- After a successful push, if the entry has `direction=push` or `both` and
+  `UploadResult.Version > 0` → update manifest atomically.
+
+### Anonymous reads
+
+`pull`/`ls`/`info`/`status`/`versions` attempt the fetch unauthenticated (empty
+token is a valid client) and only need a token for private data. A raw 401/403 on
+a read is wrapped by `friendlyAuthError` (`cmd/auth_helpers.go`) into an
+actionable "run 'gosf auth login' or set OSF_TOKEN" message. `push`/`sync`/
+`projects` still require a token up front.
 
 ### Exit code handling
 
