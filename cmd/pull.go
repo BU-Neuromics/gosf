@@ -265,18 +265,45 @@ type pullSession struct {
 	tracked      []trackedEntry
 }
 
+// trackedRemoteConflict reports the local path a remote is already tracked
+// under when that differs from destPath, or "" when there is no conflict
+// (remote untracked, tracked at the same destination, or tracked in a
+// different project). A non-empty result means the caller asked to download to
+// an explicit alternate destination, so the file should be fetched but not
+// (re-)tracked — downloading to a path and tracking that path are distinct.
+func trackedRemoteConflict(m *manifest.Manifest, nodeID, remotePath, destPath string) string {
+	if m == nil {
+		return ""
+	}
+	idx := findEntryByRemote(m, nodeID, remotePath)
+	if idx < 0 {
+		return ""
+	}
+	existing := m.Files[idx].Local
+	if existing == destPath || existing == filepath.ToSlash(destPath) {
+		return ""
+	}
+	return existing
+}
+
 // file downloads a single file item to destPath, recording it in the result.
 func (s *pullSession) file(item client.FileItem, destPath string) error {
-	// Check for duplicate remote tracking conflict before downloading.
-	if s.track && s.manifest != nil {
-		remotePath := item.Attributes.MaterializedPath
-		if remotePath == "" {
-			remotePath = s.remotePath
-		}
-		if idx := findEntryByRemote(s.manifest, s.nodeID, remotePath); idx >= 0 {
-			if s.manifest.Files[idx].Local != destPath && s.manifest.Files[idx].Local != filepath.ToSlash(destPath) {
-				return fmt.Errorf("remote path %q is already tracked as %q — cannot track it as %q",
-					remotePath, s.manifest.Files[idx].Local, destPath)
+	remotePath := item.Attributes.MaterializedPath
+	if remotePath == "" {
+		remotePath = s.remotePath
+	}
+
+	// Decide whether to record this download in the manifest. Downloading to an
+	// explicit alternate destination (e.g. a scratch/verification copy) is a
+	// plain download: fetch the bytes but leave the existing tracked entry
+	// untouched rather than aborting the whole pull.
+	trackThis := s.track && s.manifest != nil
+	if trackThis {
+		if conflict := trackedRemoteConflict(s.manifest, s.nodeID, remotePath, destPath); conflict != "" {
+			trackThis = false
+			if !s.quiet && !s.jsonMode {
+				fmt.Fprintf(os.Stderr, "note: %q is tracked as %q; downloading to %q without tracking\n",
+					remotePath, conflict, destPath)
 			}
 		}
 	}
@@ -305,11 +332,7 @@ func (s *pullSession) file(item client.FileItem, destPath string) error {
 	s.result.Add(destPath, item.Attributes.Size)
 
 	// Auto-track.
-	if s.track && s.manifest != nil {
-		remotePath := item.Attributes.MaterializedPath
-		if remotePath == "" {
-			remotePath = s.remotePath
-		}
+	if trackThis {
 		ver := s.version
 		md5 := ""
 		if ver == 0 {
