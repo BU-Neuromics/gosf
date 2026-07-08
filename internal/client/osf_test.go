@@ -2,9 +2,11 @@ package client
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -242,6 +244,48 @@ func TestListFilesParsesLinksAndKind(t *testing.T) {
 	}
 	if items[1].Links.Download == "" || items[1].Links.Delete == "" {
 		t.Error("file links not parsed")
+	}
+}
+
+func TestListFilesParsesHashes(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"data":[
+			{"id":"folder1","attributes":{"name":"data","kind":"folder","extra":{"hashes":{"md5":null,"sha256":null}}}},
+			{"id":"file1","attributes":{"name":"x.csv","kind":"file","size":99,
+			 "extra":{"hashes":{"md5":"d41d8cd98f00b204e9800998ecf8427e","sha256":"abc123"}}}}
+		],"links":{"next":null}}`)
+	}))
+	defer srv.Close()
+
+	c := newTestClient("tok", srv.URL)
+	items, err := c.ListFiles(context.Background(), "abc12")
+	if err != nil {
+		t.Fatalf("ListFiles: %v", err)
+	}
+	if got := items[1].Attributes.Extra.Hashes.MD5; got != "d41d8cd98f00b204e9800998ecf8427e" {
+		t.Errorf("file MD5 = %q, want d41d8cd98f00b204e9800998ecf8427e", got)
+	}
+	if got := items[1].Attributes.Extra.Hashes.SHA256; got != "abc123" {
+		t.Errorf("file SHA256 = %q, want abc123", got)
+	}
+	// Folders carry null hashes; they must parse to empty strings, not error.
+	if got := items[0].Attributes.Extra.Hashes.MD5; got != "" {
+		t.Errorf("folder MD5 = %q, want empty", got)
+	}
+
+	// ls --output=json marshals FileItem directly, so the hash must survive
+	// serialisation for the JSON contract.
+	b, err := json.Marshal(items[1])
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !strings.Contains(string(b), `"md5":"d41d8cd98f00b204e9800998ecf8427e"`) {
+		t.Errorf("marshalled file JSON missing md5: %s", b)
+	}
+	// A folder with null hashes must not emit empty md5/sha256 noise.
+	fb, _ := json.Marshal(items[0])
+	if strings.Contains(string(fb), `"md5"`) {
+		t.Errorf("folder JSON should omit empty md5: %s", fb)
 	}
 }
 

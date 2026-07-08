@@ -69,6 +69,21 @@ type FileAttributes struct {
 	DateCreated      string `json:"date_created"`
 	MaterializedPath string `json:"materialized_path"`
 	ContentType      string `json:"content_type"`
+	// Extra carries the content hashes OSF reports for files under
+	// attributes.extra.hashes. Folders report null hashes, which decode to
+	// empty strings; omitempty keeps them out of the JSON output.
+	Extra FileExtra `json:"extra"`
+}
+
+// FileExtra holds the OSF "extra" attribute block for a file.
+type FileExtra struct {
+	Hashes FileHashes `json:"hashes"`
+}
+
+// FileHashes holds the content hashes OSF computes for a file version.
+type FileHashes struct {
+	MD5    string `json:"md5,omitempty"`
+	SHA256 string `json:"sha256,omitempty"`
 }
 
 // FileLinks contains action URLs for a file.
@@ -269,15 +284,11 @@ type FileVersion struct {
 
 // FileVersionAttributes holds per-version metadata.
 type FileVersionAttributes struct {
-	Version     int    `json:"version"`
-	Size        int64  `json:"size"`
-	DateCreated string `json:"date_created"`
-	ContentType string `json:"content_type"`
-	Extra       struct {
-		Hashes struct {
-			MD5 string `json:"md5"`
-		} `json:"hashes"`
-	} `json:"extra"`
+	Version     int       `json:"version"`
+	Size        int64     `json:"size"`
+	DateCreated string    `json:"date_created"`
+	ContentType string    `json:"content_type"`
+	Extra       FileExtra `json:"extra"`
 }
 
 // Contributor returns the best available identifier for the user who created this version:

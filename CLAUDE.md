@@ -123,7 +123,7 @@ JSON goes to stdout; progress bars are suppressed in JSON mode.
 
 | Command | JSON shape |
 |---------|-----------|
-| `ls` | array of file objects (`[]` when empty, never `null`) |
+| `ls` | array of file objects (`[]` when empty, never `null`); each file object carries its content hashes under `attributes.extra.hashes.{md5,sha256}` (empty hashes omitted, so folders carry none) |
 | `info` | the node object |
 | `projects` | array of node objects |
 | `open` | `{"url": "..."}` (does not launch a browser) |

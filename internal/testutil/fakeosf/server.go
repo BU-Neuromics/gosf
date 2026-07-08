@@ -323,8 +323,11 @@ func (s *Server) fileItemJSON(nodeID string, f *File) map[string]any {
 		kind = "folder"
 	}
 	size := int64(0)
+	md5Str := ""
 	if !f.IsFolder && len(f.Versions) > 0 {
-		size = int64(len(f.Versions[len(f.Versions)-1].content))
+		latest := f.Versions[len(f.Versions)-1]
+		size = int64(len(latest.content))
+		md5Str = latest.md5
 	}
 	folderHref := ""
 	if f.IsFolder {
@@ -339,6 +342,7 @@ func (s *Server) fileItemJSON(nodeID string, f *File) map[string]any {
 			"date_modified":     "2024-01-01T00:00:00",
 			"date_created":      "2024-01-01T00:00:00",
 			"materialized_path": f.FilePath,
+			"extra":             map[string]any{"hashes": map[string]any{"md5": md5Str}},
 		},
 		"links": map[string]any{
 			"download": fmt.Sprintf("%s/v1/files/%s", base, f.ID),
