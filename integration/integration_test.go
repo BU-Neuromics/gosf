@@ -219,11 +219,11 @@ func TestPull_NoTrack(t *testing.T) {
 	}
 }
 
-func TestPull_DuplicateRemoteConflict(t *testing.T) {
+func TestPull_AlternateDestinationDownloadsWithoutTracking(t *testing.T) {
 	env := newTestEnv(t)
 	env.srv.AddProject("abc12", "Test Project")
 	env.srv.AddFile("abc12", "/data/counts.h5", []byte("data"))
-	env.writeFile(".gosf/gosf.toml", `[project]
+	manifestBody := `[project]
 id = "abc12"
 
 [[files]]
@@ -232,14 +232,32 @@ remote = "/data/counts.h5"
 direction = "pull"
 version = 0
 md5 = ""
-`)
-	// Pulling same remote path to a different local dest should error.
-	_, stderr, code := env.run("pull", "abc12:/data/counts.h5", "new_dest/", "--quiet")
-	if code == 0 {
-		t.Error("expected error when pulling tracked remote to different local path")
+`
+	env.writeFile(".gosf/gosf.toml", manifestBody)
+
+	// Pulling a tracked remote path to an explicit alternate destination is a
+	// plain download: it must succeed, land the bytes at the requested path,
+	// and leave the manifest untouched (issue #36).
+	_, stderr, code := env.run("pull", "abc12:/data/counts.h5", "scratch/copy.h5")
+	if code != 0 {
+		t.Fatalf("expected exit 0 pulling to alternate destination; stderr=%s", stderr)
 	}
-	if !strings.Contains(stderr, "already tracked") {
-		t.Errorf("stderr should mention 'already tracked': %s", stderr)
+	if !env.fileExists("scratch/copy.h5") {
+		t.Fatal("file was not downloaded to the alternate destination")
+	}
+	if got := env.readFile("scratch/copy.h5"); got != "data" {
+		t.Errorf("downloaded content = %q, want %q", got, "data")
+	}
+	if !strings.Contains(stderr, "without tracking") {
+		t.Errorf("stderr should note the download was not tracked: %s", stderr)
+	}
+	// The manifest must be unchanged: no new entry for the scratch path.
+	toml := env.readFile(".gosf/gosf.toml")
+	if strings.Contains(toml, "scratch/copy.h5") {
+		t.Errorf("manifest should not have been re-tracked; got:\n%s", toml)
+	}
+	if !strings.Contains(toml, `local = "other/counts.h5"`) {
+		t.Errorf("original manifest entry should be preserved; got:\n%s", toml)
 	}
 }
 

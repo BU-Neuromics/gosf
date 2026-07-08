@@ -282,6 +282,66 @@ func TestFindEntryByLocal(t *testing.T) {
 	}
 }
 
+func TestTrackedRemoteConflict(t *testing.T) {
+	m := &manifest.Manifest{
+		Project: manifest.ProjectConfig{ID: "abc12"},
+		Files: []manifest.Entry{
+			{Local: "ml_prediction/ccc/lca_class.csv", Remote: "/ccc/lca_class.csv", Direction: "pull", Version: 1},
+		},
+	}
+
+	cases := []struct {
+		name       string
+		nodeID     string
+		remotePath string
+		destPath   string
+		want       string
+	}{
+		{
+			name:       "explicit alternate destination is a plain download, not a re-track",
+			nodeID:     "abc12",
+			remotePath: "/ccc/lca_class.csv",
+			destPath:   "/tmp/scratch/lca_class.csv",
+			want:       "ml_prediction/ccc/lca_class.csv",
+		},
+		{
+			name:       "same destination as tracked local is not a conflict",
+			nodeID:     "abc12",
+			remotePath: "/ccc/lca_class.csv",
+			destPath:   "ml_prediction/ccc/lca_class.csv",
+			want:       "",
+		},
+		{
+			name:       "untracked remote path is not a conflict",
+			nodeID:     "abc12",
+			remotePath: "/ccc/other.csv",
+			destPath:   "/tmp/scratch/other.csv",
+			want:       "",
+		},
+		{
+			name:       "same remote path in a different project is not a conflict",
+			nodeID:     "zzz99",
+			remotePath: "/ccc/lca_class.csv",
+			destPath:   "/tmp/scratch/lca_class.csv",
+			want:       "",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := trackedRemoteConflict(m, tc.nodeID, tc.remotePath, tc.destPath)
+			if got != tc.want {
+				t.Errorf("trackedRemoteConflict(%q,%q,%q) = %q, want %q",
+					tc.nodeID, tc.remotePath, tc.destPath, got, tc.want)
+			}
+		})
+	}
+
+	// A nil manifest never reports a conflict.
+	if got := trackedRemoteConflict(nil, "abc12", "/ccc/lca_class.csv", "/tmp/x"); got != "" {
+		t.Errorf("trackedRemoteConflict(nil, ...) = %q, want empty", got)
+	}
+}
+
 func TestBuildOSFWebURL(t *testing.T) {
 	cases := []struct {
 		target resolver.Target
