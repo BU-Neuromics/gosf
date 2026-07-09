@@ -174,6 +174,15 @@ func (s *Server) AddVersion(projectID, filePath string, content []byte) *File {
 	return f
 }
 
+// AddFolder ensures a folder (and any parents) exists in a project and returns
+// it. Test-only helper for setting up subfolders to push into.
+func (s *Server) AddFolder(projectID, folderPath string) *File {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	proj := s.projects[projectID]
+	return s.ensureFolderLocked(proj, folderPath)
+}
+
 func (s *Server) addFileLocked(projectID, filePath string, content []byte) *File {
 	proj := s.projects[projectID]
 	h := md5.Sum(content)
@@ -361,12 +370,7 @@ func (s *Server) fileItemJSON(nodeID string, f *File) map[string]any {
 			"materialized_path": f.FilePath,
 			"extra":             map[string]any{"hashes": map[string]any{"md5": md5Str}},
 		},
-		"links": map[string]any{
-			"download": fmt.Sprintf("%s/v1/files/%s", base, f.ID),
-			"upload":   fmt.Sprintf("%s/v1/files/%s/upload", base, f.ID),
-			"delete":   fmt.Sprintf("%s/v1/files/%s/delete", base, f.ID),
-			"move":     fmt.Sprintf("%s/v1/files/%s/move", base, f.ID),
-		},
+		"links": s.itemLinks(nodeID, f),
 		"relationships": map[string]any{
 			"files": map[string]any{
 				"links": map[string]any{
@@ -377,6 +381,26 @@ func (s *Server) fileItemJSON(nodeID string, f *File) map[string]any {
 			},
 		},
 	}
+}
+
+// itemLinks builds the action links for a file or folder. A folder's upload /
+// new_folder links are ID-based Waterbutler resource URLs (osfstorage addresses
+// folders by opaque ID); a file's upload link is its own version-upload endpoint.
+func (s *Server) itemLinks(nodeID string, f *File) map[string]any {
+	base := s.URL()
+	links := map[string]any{
+		"download": fmt.Sprintf("%s/v1/files/%s", base, f.ID),
+		"delete":   fmt.Sprintf("%s/v1/files/%s/delete", base, f.ID),
+		"move":     fmt.Sprintf("%s/v1/files/%s/move", base, f.ID),
+	}
+	if f.IsFolder {
+		folderBase := fmt.Sprintf("%s/v1/resources/%s/providers/osfstorage/%s/", base, nodeID, f.ID)
+		links["upload"] = folderBase
+		links["new_folder"] = folderBase + "?kind=folder"
+	} else {
+		links["upload"] = fmt.Sprintf("%s/v1/files/%s/upload", base, f.ID)
+	}
+	return links
 }
 
 // --- Handler implementations ---
@@ -527,7 +551,11 @@ func (s *Server) handleNewUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	nodeID := rest[:slashIdx]
-	pathPart := rest[slashIdx+len(provSuffix):]
+	// The segment after osfstorage/ is the parent folder's opaque object ID
+	// (empty = storage root) — NOT a name. This mirrors real Waterbutler, which
+	// 404s a name-based path; it is what lets these tests catch the subfolder
+	// upload bug that a name-lenient fake would hide.
+	parentID := strings.Trim(rest[slashIdx+len(provSuffix):], "/")
 
 	name := r.URL.Query().Get("name")
 	if name == "" {
@@ -539,20 +567,17 @@ func (s *Server) handleNewUpload(w http.ResponseWriter, r *http.Request) {
 		kind = "file"
 	}
 
-	var parentPath string
-	if pathPart == "" || strings.Trim(pathPart, "/") == "" {
-		parentPath = "/"
-	} else {
-		parentPath = "/" + strings.Trim(pathPart, "/")
-	}
-	fullPath := parentPath
-	if fullPath == "/" {
-		fullPath = "/" + name
-	} else {
-		fullPath = fullPath + "/" + name
-	}
-
 	if kind == "folder" {
+		// NOTE: folder creation is still resolved by NAME path here. mkdir into a
+		// subfolder has the same opaque-ID bug as file upload once had, but the fix
+		// is scoped to file uploads for now; keeping the fake name-lenient for
+		// folders leaves mkdir behavior (and its tests) unchanged. Tracked as a
+		// follow-up.
+		parentPath := "/"
+		if parentID != "" {
+			parentPath = "/" + parentID
+		}
+		fullPath := strings.TrimRight(parentPath, "/") + "/" + name
 		s.mu.Lock()
 		if proj, ok := s.projects[nodeID]; ok {
 			s.ensureFolderLocked(proj, fullPath)
@@ -577,20 +602,41 @@ func (s *Server) handleNewUpload(w http.ResponseWriter, r *http.Request) {
 	md5Str := fmt.Sprintf("%x", h[:])
 
 	s.mu.Lock()
-	if proj, ok := s.projects[nodeID]; ok {
-		s.nextID++
-		f := &File{
-			ID:       fmt.Sprintf("f%d", s.nextID),
-			Name:     name,
-			FilePath: fullPath,
-			Versions: []fileVer{{num: 1, content: content, md5: md5Str}},
+	proj, ok := s.projects[nodeID]
+	if !ok {
+		s.mu.Unlock()
+		http.NotFound(w, r)
+		return
+	}
+	var parent *File
+	if parentID != "" {
+		pf, found := proj.byID[parentID]
+		if !found || !pf.IsFolder {
+			// Unknown/non-folder id (e.g. a name-built path) → 404, like real OSF.
+			s.mu.Unlock()
+			http.NotFound(w, r)
+			return
 		}
-		proj.byID[f.ID] = f
-		proj.byPath[fullPath] = f
-		s.allFiles[f.ID] = f
-		if parentPath == "/" {
-			proj.root = append(proj.root, f)
-		}
+		parent = pf
+	}
+	fullPath := "/" + name
+	if parent != nil {
+		fullPath = parent.FilePath + "/" + name
+	}
+	s.nextID++
+	f := &File{
+		ID:       fmt.Sprintf("f%d", s.nextID),
+		Name:     name,
+		FilePath: fullPath,
+		Versions: []fileVer{{num: 1, content: content, md5: md5Str}},
+	}
+	proj.byID[f.ID] = f
+	proj.byPath[fullPath] = f
+	s.allFiles[f.ID] = f
+	if parent == nil {
+		proj.root = append(proj.root, f)
+	} else {
+		parent.Children = append(parent.Children, f)
 	}
 	s.uploads = append(s.uploads, UploadRecord{NodeID: nodeID, Path: fullPath, Content: content})
 	s.mu.Unlock()

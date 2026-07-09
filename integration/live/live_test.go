@@ -119,10 +119,12 @@ func TestLive_Rm(t *testing.T) {
 // different node than the manifest's default project), driven through the
 // manifest with a per-entry `project` override.
 //
-// Skipped by default so the dev live-suite stays green; un-skip to reproduce the
-// bug, which is the signal we use to drive the fix (TDD).
+// The subfolder-upload ID fix (new files now target the parent folder's ID-based
+// links.upload) likely resolves this too, but it hasn't been verified against
+// live OSF yet. Still skipped so the dev live-suite stays green; un-skip and run
+// privately to confirm the fix covers the cross-project case.
 func TestLive_ComponentPushNewVersion(t *testing.T) {
-	t.Skip("known bug: 404 on cross-project (component) new-version push — un-skip to reproduce, then fix")
+	t.Skip("un-skip and run live to confirm the subfolder-upload fix also covers cross-project new-version push")
 
 	e := requireLive(t)
 	comp := e.requireComponent()

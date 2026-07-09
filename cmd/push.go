@@ -334,7 +334,15 @@ func (s *pushSession) file(srcPath, nodeID, destPath string) error {
 		}
 	}
 
-	plan, err := planUpload(s.conflict, existingItem, nodeID, parentDir, filename, existing)
+	// osfstorage addresses folders by opaque ID, so a new-file upload must target
+	// the parent folder's ID-based links.upload (or the storage root), never a
+	// name-built path.
+	uploadBase, err := folderUploadBase(s.ctx, s.res, nodeID, parentDir)
+	if err != nil {
+		return err
+	}
+
+	plan, err := planUpload(s.conflict, existingItem, uploadBase, filename, existing)
 	if err != nil {
 		return err
 	}
@@ -456,18 +464,20 @@ type uploadPlan struct {
 	action string // "upload", "overwrite", "rename", or "skip"
 }
 
-// planUpload decides how to handle a file given the conflict mode and whether
-// a file of the same name already exists at the destination. It is pure: all
-// inputs are explicit, so it is fully unit-testable.
+// planUpload decides how to handle a file given the conflict mode and whether a
+// file of the same name already exists at the destination. uploadBase is the
+// ID-correct Waterbutler base for the destination folder (RootUploadURL or the
+// folder's links.upload); new/rename URLs are derived from it. Pure and
+// fully unit-testable.
 func planUpload(
 	conflict string,
 	existing *client.FileItem,
-	nodeID, parentDir, filename string,
+	uploadBase, filename string,
 	siblings []client.FileItem,
 ) (uploadPlan, error) {
 	if existing == nil {
 		return uploadPlan{
-			url:    client.BuildUploadURL(nodeID, parentDir, filename),
+			url:    client.AppendUploadName(uploadBase, filename),
 			name:   filename,
 			action: "upload",
 		}, nil
@@ -481,12 +491,38 @@ func planUpload(
 	case "rename":
 		name := findFreeName(filename, siblings)
 		return uploadPlan{
-			url:    client.BuildUploadURL(nodeID, parentDir, name),
+			url:    client.AppendUploadName(uploadBase, name),
 			name:   name,
 			action: "rename",
 		}, nil
 	}
 	return uploadPlan{}, fmt.Errorf("unknown conflict mode: %s", conflict)
+}
+
+// isRootDir reports whether an OSF parent path refers to the storage root.
+func isRootDir(parentDir string) bool {
+	return strings.Trim(parentDir, "/") == ""
+}
+
+// folderUploadBase returns the ID-correct Waterbutler upload base for parentDir
+// in a node: the storage root URL for the root, otherwise the parent folder's
+// own links.upload (resolved from the metadata API — osfstorage folders are
+// addressed by opaque ID, not name).
+func folderUploadBase(ctx context.Context, res *resolver.Resolver, nodeID, parentDir string) (string, error) {
+	if isRootDir(parentDir) {
+		return client.RootUploadURL(nodeID), nil
+	}
+	folder, err := res.Resolve(ctx, nodeID, parentDir)
+	if err != nil {
+		return "", fmt.Errorf("destination folder %s is not accessible (does it exist?): %w", parentDir, err)
+	}
+	if folder.Attributes.Kind != "folder" {
+		return "", fmt.Errorf("destination %s is not a folder", parentDir)
+	}
+	if folder.Links.Upload == "" {
+		return "", fmt.Errorf("destination folder %s has no upload link", parentDir)
+	}
+	return folder.Links.Upload, nil
 }
 
 // deriveUploadTarget splits an OSF destination path into the parent directory
