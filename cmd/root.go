@@ -13,6 +13,7 @@ import (
 
 	"github.com/BU-Neuromics/gosf/internal/config"
 	"github.com/BU-Neuromics/gosf/internal/output"
+	"github.com/BU-Neuromics/gosf/internal/update"
 )
 
 // version is set at build time via -ldflags "-X github.com/BU-Neuromics/gosf/cmd.version=vX.Y.Z"
@@ -72,7 +73,17 @@ func Execute() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	if err := rootCmd.ExecuteContext(ctx); err != nil {
+	err := rootCmd.ExecuteContext(ctx)
+	canceled := ctx.Err() != nil
+	stop() // release signal handling before the (best-effort) update check
+
+	// Cached, best-effort "new release available" notice. Skipped after a Ctrl-C
+	// and gated internally on TTY / --quiet / --output=json / GOSF_NO_UPDATE_CHECK.
+	if !canceled {
+		update.MaybeNotify(version, flagOutput == "json", flagQuiet)
+	}
+
+	if err != nil {
 		// exitCodeError: use the specified exit code with no message printed.
 		var exitErr *exitCodeError
 		if errors.As(err, &exitErr) {

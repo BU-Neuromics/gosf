@@ -101,6 +101,8 @@ gosf/
 │   │   └── status.go       # ClassifyFile, FileState, RemoteVersion
 │   ├── config/
 │   │   └── config.go       # config file + keychain + env
+│   ├── update/
+│   │   └── update.go       # cached "new release available" check
 │   └── output/
 │       ├── format.go       # human-readable vs --output=json
 │       ├── style.go        # color init + Green/Red/Yellow/Cyan/Bold/Dim helpers
@@ -120,6 +122,14 @@ gosf/
 - `--conflict=skip|overwrite|rename` on push (default: skip)
 - `--quiet` suppresses progress/non-error output
 - Proper non-zero exit codes on errors
+- **Update check** (`internal/update`): after each command, `update.MaybeNotify`
+  prints a one-line "new release available" notice to stderr when the installed
+  version is behind the latest GitHub release. Best-effort and cached — it hits
+  the releases API at most once/day (`~/.config/gosf/update_check.json`), uses a
+  short timeout, and never blocks. Gated off under `--quiet`, `--output=json`,
+  non-TTY stderr, a `dev` build, a Ctrl-C'd run, and when `GOSF_NO_UPDATE_CHECK`
+  is set. The gate (`shouldNotify`) and semver compare (`newerAvailable`) are
+  pure/unit-tested; the checker's HTTP/cache/clock are injectable.
 - Colorized output (`fatih/color`) + spinners (`briandowns/spinner`) for
   indeterminate waits. Color is resolved once in `root.go`'s `PersistentPreRunE`
   via `output.InitColor`: on only when stdout is a TTY, forced off under
