@@ -120,7 +120,7 @@ type UploadResult struct {
 }
 
 // Upload sends a local file to a Waterbutler upload URL, showing a progress
-// bar unless quiet is true. Use BuildUploadURL for new files.
+// bar unless quiet is true. Use RootUploadURL/AppendUploadName for new files.
 // Returns UploadResult with the new version number and MD5 hash.
 func (c *WaterbutlerClient) Upload(ctx context.Context, srcPath, uploadURL string, quiet bool) (UploadResult, error) {
 	f, err := os.Open(srcPath)
@@ -220,30 +220,36 @@ func (c *WaterbutlerClient) Delete(ctx context.Context, deleteURL string) error 
 	return nil
 }
 
-// BuildUploadURL constructs the Waterbutler URL for uploading a *new* file.
-//   - nodeID:     OSF project/component GUID
-//   - parentPath: absolute path of the parent folder (e.g. "/" or "/data/results")
-//   - filename:   name of the new file
+// RootUploadURL returns the Waterbutler URL for the storage root of a node —
+// the base you PUT to (with a name/kind query) to add a new item at the root.
 //
 // Set GOSF_FILES_BASE to override the Waterbutler base URL (useful in tests).
-func BuildUploadURL(nodeID, parentPath, filename string) string {
+//
+// NOTE: osfstorage addresses folders by opaque object ID, not by name, so there
+// is deliberately no "build a path from folder names" helper — to upload into a
+// subfolder, take that folder's links.upload (an ID-based URL from the metadata
+// API) and pass it to AppendUploadName.
+func RootUploadURL(nodeID string) string {
 	filesBase := os.Getenv("GOSF_FILES_BASE")
 	if filesBase == "" {
 		filesBase = wbBase
 	}
-	base := filesBase + "/v1/resources/" + nodeID + "/providers/osfstorage/"
+	return filesBase + "/v1/resources/" + nodeID + "/providers/osfstorage/"
+}
 
-	p := strings.Trim(parentPath, "/")
-	if p != "" {
-		parts := strings.Split(p, "/")
-		encoded := make([]string, len(parts))
-		for i, seg := range parts {
-			encoded[i] = url.PathEscape(seg)
-		}
-		base += strings.Join(encoded, "/") + "/"
+// AppendUploadName sets the name/kind query params for a new-file upload on an
+// upload base URL. uploadBase is either RootUploadURL(node) or a folder's
+// links.upload (already ID-based). Existing query params are preserved.
+func AppendUploadName(uploadBase, filename string) string {
+	u, err := url.Parse(uploadBase)
+	if err != nil {
+		return uploadBase + "?name=" + url.QueryEscape(filename) + "&kind=file"
 	}
-
-	return base + "?name=" + url.QueryEscape(filename) + "&kind=file"
+	q := u.Query()
+	q.Set("name", filename)
+	q.Set("kind", "file")
+	u.RawQuery = q.Encode()
+	return u.String()
 }
 
 // RevisionURL appends ?revision=N (or &revision=N) to a Waterbutler download URL

@@ -464,8 +464,9 @@ logic *out* of those glue layers and into tested functions.
 
 #### What this means in practice
 
-- **Pure functions** (`ParseTarget`, `BuildUploadURL`, `FormatSize`,
-  `findFreeName`, `splitPath`, `buildOSFWebURL`): test directly with table tests.
+- **Pure functions** (`ParseTarget`, `RootUploadURL`, `AppendUploadName`,
+  `FormatSize`, `findFreeName`, `splitPath`, `buildOSFWebURL`): test directly with
+  table tests.
 - **HTTP clients** (`internal/client`): test against `httptest.Server`. The
   client base URLs are injectable fields so tests point them at the test server.
   Cover happy path, pagination, and every error status the command maps.
@@ -547,15 +548,21 @@ Delete(ctx, deleteURL string) error
 
 **Upload URL construction** (used by `push` to upload new files):
 
-```
-https://files.osf.io/v1/resources/{nodeID}/providers/osfstorage/{parentPath}?name={filename}&kind=file
-```
+`osfstorage` addresses folders by **opaque object ID, not by name**, so upload
+URLs must never be built from a folder-name path (doing so 404s on real OSF for
+any non-root subfolder — the bug the live tier caught). Instead:
 
-- Root: `parentPath` = empty (URL ends in `osfstorage/`)
-- Subdir: `parentPath` = URL-path-encoded path with trailing slash, no leading slash
+- **Root:** `client.RootUploadURL(nodeID)` → `…/providers/osfstorage/`, then
+  `client.AppendUploadName(base, filename)`.
+- **Subfolder:** resolve the parent folder via the metadata API and use its
+  `FileLinks.Upload` (already an ID-based Waterbutler URL), then
+  `AppendUploadName`. `cmd.folderUploadBase` encapsulates root-vs-subfolder.
 
-For *overwriting* an existing file, PUT directly to `FileLinks.Upload` (already
-contains the correct versioned URL from the metadata API).
+For *overwriting* an existing file, PUT directly to the file's `FileLinks.Upload`
+(the correct versioned, ID-based URL from the metadata API).
+
+> Note: `mkdir` into a subfolder still builds a name-based folder URL and has the
+> same ID bug — a scoped follow-up.
 
 **Redirect handling**: Waterbutler redirects downloads to S3 (or other backend).
 Strip the `Authorization` header when following redirects to a different host.
@@ -622,7 +629,8 @@ and returns an empty string otherwise.
 fetching a specific historical version. Used by `pull --version=<n>`.
 
 Two distinct upload paths in `push`:
-- **New file**: PUT to `BuildUploadURL(nodeID, parentPath, filename)` → 201 Created
+- **New file**: PUT to the parent folder's ID-based upload URL
+  (`folderUploadBase` + `AppendUploadName`) → 201 Created
 - **Update (overwrite)**: PUT to `existing.Links.Upload` → 200 OK, creates new version
 
 ### Adding a new OSF API endpoint to `osf.go`

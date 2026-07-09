@@ -320,10 +320,14 @@ func resolveUploadURL(ctx context.Context, entry *manifest.Entry, proj string, r
 			return item.Links.Upload, nil
 		}
 	}
-	// New file — build upload URL.
+	// New file — resolve the parent folder's ID-based upload base (or root).
 	parentDir := filepath.Dir(entry.Remote)
 	filename := filepath.Base(entry.Remote)
-	return client.BuildUploadURL(proj, parentDir, filename), nil
+	base, err := folderUploadBase(ctx, res, proj, parentDir)
+	if err != nil {
+		return "", err
+	}
+	return client.AppendUploadName(base, filename), nil
 }
 
 // processPullEntry handles a pull-eligible entry. force authorizes overwriting

@@ -344,6 +344,26 @@ func TestPush_NewFile(t *testing.T) {
 	}
 }
 
+// TestPush_NewFileIntoSubfolder guards the fix for the subfolder-upload 404:
+// uploading a new file into an existing subfolder must target the folder's
+// ID-based Waterbutler upload link, not a name-built path (which real OSF 404s).
+func TestPush_NewFileIntoSubfolder(t *testing.T) {
+	env := newTestEnv(t)
+	env.srv.AddProject("abc12", "Test Project")
+	env.srv.AddFolder("abc12", "/sub") // folder exists, has an opaque ID
+	env.writeFile("x.csv", "hello\n")
+
+	_, stderr, code := env.run("push", "x.csv", "abc12:/sub/x.csv", "--quiet")
+	if code != 0 {
+		t.Fatalf("push into subfolder failed: exit %d; stderr=%s", code, stderr)
+	}
+	// The uploaded file must be listed under /sub.
+	out, _, _ := env.run("ls", "abc12:/sub", "--output=json")
+	if !strings.Contains(out, "x.csv") {
+		t.Errorf("pushed file not listed under /sub:\n%s", out)
+	}
+}
+
 func TestPush_ConflictSkip(t *testing.T) {
 	env := newTestEnv(t)
 	env.srv.AddProject("abc12", "Test Project")
@@ -473,6 +493,7 @@ md5 = ""
 func TestPush_BarePushFollowsManifest(t *testing.T) {
 	env := newTestEnv(t)
 	env.srv.AddProject("abc12", "Test Project")
+	env.srv.AddFolder("abc12", "/data") // destination folder must exist to upload into it
 	env.writeFile("data/report.csv", "report data")
 	env.writeFile(".gosf/gosf.toml", `[project]
 id = "abc12"

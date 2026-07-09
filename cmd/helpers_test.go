@@ -47,22 +47,24 @@ func TestPlanUpload(t *testing.T) {
 	existing := mkfile("data.csv")
 	existing.Links.Upload = "https://files.osf.io/upload/existing"
 	siblings := []client.FileItem{existing}
+	// The parent folder's ID-based upload base (as the metadata API hands it over).
+	base := "https://files.osf.io/v1/resources/abc12/providers/osfstorage/5fd0e/"
 
 	t.Run("new file", func(t *testing.T) {
-		p, err := planUpload("skip", nil, "abc12", "/data", "new.csv", nil)
+		p, err := planUpload("skip", nil, base, "new.csv", nil)
 		if err != nil {
 			t.Fatal(err)
 		}
 		if p.action != "upload" || p.name != "new.csv" {
 			t.Errorf("got %+v", p)
 		}
-		if p.url != client.BuildUploadURL("abc12", "/data", "new.csv") {
+		if p.url != client.AppendUploadName(base, "new.csv") {
 			t.Errorf("url = %q", p.url)
 		}
 	})
 
 	t.Run("skip existing", func(t *testing.T) {
-		p, err := planUpload("skip", &existing, "abc12", "/data", "data.csv", siblings)
+		p, err := planUpload("skip", &existing, base, "data.csv", siblings)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -72,7 +74,7 @@ func TestPlanUpload(t *testing.T) {
 	})
 
 	t.Run("overwrite existing", func(t *testing.T) {
-		p, err := planUpload("overwrite", &existing, "abc12", "/data", "data.csv", siblings)
+		p, err := planUpload("overwrite", &existing, base, "data.csv", siblings)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -82,20 +84,20 @@ func TestPlanUpload(t *testing.T) {
 	})
 
 	t.Run("rename existing", func(t *testing.T) {
-		p, err := planUpload("rename", &existing, "abc12", "/data", "data.csv", siblings)
+		p, err := planUpload("rename", &existing, base, "data.csv", siblings)
 		if err != nil {
 			t.Fatal(err)
 		}
 		if p.action != "rename" || p.name != "data_1.csv" {
 			t.Errorf("got %+v, want rename to data_1.csv", p)
 		}
-		if p.url != client.BuildUploadURL("abc12", "/data", "data_1.csv") {
+		if p.url != client.AppendUploadName(base, "data_1.csv") {
 			t.Errorf("url = %q", p.url)
 		}
 	})
 
 	t.Run("unknown conflict mode", func(t *testing.T) {
-		if _, err := planUpload("bogus", &existing, "abc12", "/data", "data.csv", siblings); err == nil {
+		if _, err := planUpload("bogus", &existing, base, "data.csv", siblings); err == nil {
 			t.Error("expected error for unknown conflict mode")
 		}
 	})
