@@ -44,7 +44,7 @@ Examples:
 		}
 		manifestPath, repoRoot, err := manifest.FindManifest()
 		if manifest.IsNotFound(err) {
-			return fmt.Errorf("no .gosf/gosf.toml found — run 'gosf add' to create one")
+			return fmt.Errorf("no .gosf/gosf.toml found — run 'gosf init <project-id>' to start tracking this repo, then 'gosf add' / 'gosf pull' to register files")
 		}
 		if err != nil {
 			return err
