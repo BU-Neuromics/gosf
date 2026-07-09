@@ -524,9 +524,10 @@ func (s *Server) handleVersions(w http.ResponseWriter, r *http.Request) {
 	for i := len(f.Versions) - 1; i >= 0; i-- {
 		v := f.Versions[i]
 		versions = append(versions, map[string]any{
-			"id": fmt.Sprintf("ver%d-%s", v.num, f.ID),
+			// Real OSF carries the version number as the JSON:API id (e.g. "2"),
+			// with NO version attribute — model that faithfully.
+			"id": fmt.Sprintf("%d", v.num),
 			"attributes": map[string]any{
-				"version":      v.num,
 				"size":         int64(len(v.content)),
 				"date_created": "2024-01-01T00:00:00",
 				"extra": map[string]any{

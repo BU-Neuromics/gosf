@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"strconv"
 	"time"
 )
 
@@ -289,6 +290,16 @@ type FileVersionAttributes struct {
 	DateCreated string    `json:"date_created"`
 	ContentType string    `json:"content_type"`
 	Extra       FileExtra `json:"extra"`
+}
+
+// Number returns the version number. The OSF versions endpoint carries it as the
+// JSON:API resource id (e.g. "2"), not as an attribute, so we parse the id and
+// fall back to attributes.version only when the id is non-numeric.
+func (v FileVersion) Number() int {
+	if n, err := strconv.Atoi(v.ID); err == nil {
+		return n
+	}
+	return v.Attributes.Version
 }
 
 // Contributor returns the best available identifier for the user who created this version:

@@ -58,7 +58,7 @@ Examples:
 			r := output.NewVersionsResult()
 			for _, v := range versions {
 				r.Versions = append(r.Versions, output.VersionItem{
-					Version:     v.Attributes.Version,
+					Version:     v.Number(),
 					DateCreated: v.Attributes.DateCreated,
 					Size:        v.Attributes.Size,
 					Contributor: v.Contributor(),
@@ -86,7 +86,7 @@ func printVersionsTable(versions []client.FileVersion) {
 			verStyle = output.Cyan
 		}
 		rows = append(rows, []output.Cell{
-			{Text: fmt.Sprintf("%d", v.Attributes.Version), Style: verStyle},
+			{Text: fmt.Sprintf("%d", v.Number()), Style: verStyle},
 			{Text: output.FormatDate(v.Attributes.DateCreated), Style: output.Dim},
 			{Text: output.FormatSize(v.Attributes.Size)},
 			{Text: v.Contributor()},

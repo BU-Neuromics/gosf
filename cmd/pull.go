@@ -355,7 +355,7 @@ func (s *pullSession) file(item client.FileItem, destPath string) error {
 		md5 := ""
 		if ver == 0 {
 			if versions, err := s.osf.GetFileVersions(s.ctx, item.ID); err == nil && len(versions) > 0 {
-				ver = versions[0].Attributes.Version
+				ver = versions[0].Number()
 				md5 = versions[0].Attributes.Extra.Hashes.MD5
 			}
 		} else {
@@ -409,7 +409,7 @@ func (s *pullSession) tree(items []client.FileItem, destDir, remoteBase string) 
 // validateVersion checks that version n exists in the list returned by GetFileVersions.
 func validateVersion(versions []client.FileVersion, n int) error {
 	for _, v := range versions {
-		if v.Attributes.Version == n {
+		if v.Number() == n {
 			return nil
 		}
 	}

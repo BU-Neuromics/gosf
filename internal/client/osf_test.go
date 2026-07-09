@@ -289,6 +289,20 @@ func TestListFilesParsesHashes(t *testing.T) {
 	}
 }
 
+func TestFileVersion_Number(t *testing.T) {
+	// Real OSF: the version number is the JSON:API id, with no version attribute.
+	if n := (FileVersion{ID: "2"}).Number(); n != 2 {
+		t.Errorf("Number from id = %d, want 2", n)
+	}
+	// Fallback to attributes.version when the id is non-numeric or absent.
+	if n := (FileVersion{ID: "abc", Attributes: FileVersionAttributes{Version: 5}}).Number(); n != 5 {
+		t.Errorf("Number fallback = %d, want 5", n)
+	}
+	if n := (FileVersion{Attributes: FileVersionAttributes{Version: 7}}).Number(); n != 7 {
+		t.Errorf("Number empty-id fallback = %d, want 7", n)
+	}
+}
+
 func TestGetFileVersions_HappyPath(t *testing.T) {
 	var gotPath, gotQuery string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -325,9 +339,9 @@ func TestGetFileVersions_HappyPath(t *testing.T) {
 		t.Fatalf("got %d versions, want 3", len(versions))
 	}
 
-	// version 3: email_primary wins
-	if versions[0].Attributes.Version != 3 {
-		t.Errorf("versions[0].Version = %d, want 3", versions[0].Attributes.Version)
+	// version 3: number comes from the JSON:API id; email_primary wins for contributor
+	if versions[0].Number() != 3 {
+		t.Errorf("versions[0].Number() = %d, want 3", versions[0].Number())
 	}
 	if versions[0].Attributes.Extra.Hashes.MD5 != "aaa111" {
 		t.Errorf("versions[0].MD5 = %q, want aaa111", versions[0].Attributes.Extra.Hashes.MD5)

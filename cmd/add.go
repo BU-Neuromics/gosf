@@ -163,7 +163,7 @@ Path rules follow scp conventions:
 			if existingItem, err := res.Resolve(cmd.Context(), nodeID, remotePath); err == nil {
 				if versions, err := c.GetFileVersions(cmd.Context(), existingItem.ID); err == nil && len(versions) > 0 {
 					latest := versions[0]
-					entry.Version = latest.Attributes.Version
+					entry.Version = latest.Number()
 					entry.MD5 = latest.Attributes.Extra.Hashes.MD5
 				}
 			}
