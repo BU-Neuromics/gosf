@@ -178,8 +178,12 @@ func TestDeleteToken_ClearsKeychainAndFile(t *testing.T) {
 		t.Fatalf("writeTokenToFile: %v", err)
 	}
 
-	if err := DeleteToken(); err != nil {
+	warning, err := DeleteToken()
+	if err != nil {
 		t.Fatalf("DeleteToken: %v", err)
+	}
+	if warning != "" {
+		t.Errorf("unexpected keychain warning: %q", warning)
 	}
 	if _, err := keyring.Get(keychainService, keychainUser); err == nil {
 		t.Error("expected keychain token to be deleted")
@@ -195,14 +199,16 @@ func TestDeleteToken_ClearsKeychainAndFile(t *testing.T) {
 func TestDeleteToken_NoFileIsOK(t *testing.T) {
 	reset(t)
 	// No token file written — delete should still succeed.
-	if err := DeleteToken(); err != nil {
+	if _, err := DeleteToken(); err != nil {
 		t.Errorf("DeleteToken with no token file = %v, want nil", err)
 	}
 }
 
-// TestDeleteToken_SurfacesKeychainError verifies that a real keychain failure
-// (not a benign "not found") is reported rather than silently swallowed.
-func TestDeleteToken_SurfacesKeychainError(t *testing.T) {
+// TestDeleteToken_WarnsButSucceedsOnKeychainError verifies that a keychain
+// failure (e.g. a locked keychain on headless/HPC) is a non-fatal warning: the
+// token file is still removed and logout succeeds. This is what keeps
+// `gosf auth logout` working where the keychain is unavailable.
+func TestDeleteToken_WarnsButSucceedsOnKeychainError(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	t.Setenv("OSF_TOKEN", "")
 	keyring.MockInitWithError(fmt.Errorf("keychain is locked"))
@@ -211,9 +217,19 @@ func TestDeleteToken_SurfacesKeychainError(t *testing.T) {
 	if err := InitViper(); err != nil {
 		t.Fatalf("InitViper: %v", err)
 	}
-	err := DeleteToken()
-	if err == nil {
-		t.Fatal("expected DeleteToken to surface the keychain error, got nil")
+	if err := writeTokenToFile("from-file"); err != nil {
+		t.Fatalf("writeTokenToFile: %v", err)
+	}
+
+	warning, err := DeleteToken()
+	if err != nil {
+		t.Fatalf("DeleteToken should not fail on a keychain error, got: %v", err)
+	}
+	if warning == "" {
+		t.Error("expected a non-empty keychain warning")
+	}
+	if got := readTokenFromFile(); got != "" {
+		t.Errorf("token file should be removed despite the keychain error, got %q", got)
 	}
 }
 

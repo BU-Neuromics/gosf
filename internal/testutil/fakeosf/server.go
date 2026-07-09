@@ -110,16 +110,25 @@ type NodePatchRecord struct {
 
 // Server is a combined fake OSF metadata + Waterbutler HTTP server.
 type Server struct {
-	srv      *httptest.Server
-	projects map[string]*fakeProject
-	allFiles map[string]*File // all files across projects, keyed by ID
-	uploads  []UploadRecord
-	deletes  []string          // file IDs that received a DELETE request
-	moves    []MoveRecord      // move/copy/rename actions received
-	patches  []NodePatchRecord // PATCH /nodes/{id}/ requests received
-	folders  []string          // folder paths created via kind=folder PUT
-	nextID   int
-	mu       sync.Mutex
+	srv        *httptest.Server
+	projects   map[string]*fakeProject
+	allFiles   map[string]*File // all files across projects, keyed by ID
+	uploads    []UploadRecord
+	deletes    []string          // file IDs that received a DELETE request
+	moves      []MoveRecord      // move/copy/rename actions received
+	patches    []NodePatchRecord // PATCH /nodes/{id}/ requests received
+	folders    []string          // folder paths created via kind=folder PUT
+	validToken string            // when set, /v2/users/me/ requires this exact bearer token
+	nextID     int
+	mu         sync.Mutex
+}
+
+// SetValidToken makes /v2/users/me/ accept only this bearer token (others 401).
+// When unset (default), any non-empty bearer token authenticates.
+func (s *Server) SetValidToken(token string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.validToken = token
 }
 
 // New creates and starts a new fake server.
@@ -304,6 +313,8 @@ func (s *Server) GetFile(projectID, filePath string) *File {
 func (s *Server) handler(w http.ResponseWriter, r *http.Request) {
 	p := r.URL.Path
 	switch {
+	case r.Method == http.MethodGet && p == "/v2/users/me/":
+		s.handleCurrentUser(w, r)
 	case r.Method == http.MethodGet && p == "/v2/users/me/nodes/":
 		s.handleUserNodes(w, r)
 	case r.Method == http.MethodGet && strings.HasPrefix(p, "/v2/nodes/") && strings.Contains(p, "/files/osfstorage/"):
@@ -404,6 +415,34 @@ func (s *Server) itemLinks(nodeID string, f *File) map[string]any {
 }
 
 // --- Handler implementations ---
+
+// handleCurrentUser serves GET /v2/users/me/, validating the bearer token.
+func (s *Server) handleCurrentUser(w http.ResponseWriter, r *http.Request) {
+	bearer := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+	s.mu.Lock()
+	valid := s.validToken
+	s.mu.Unlock()
+
+	authOK := bearer != "" && (valid == "" || bearer == valid)
+	if !authOK {
+		writeJSON(w, http.StatusUnauthorized, map[string]any{
+			"errors": []map[string]any{{"detail": "User provided an invalid OAuth2 access token"}},
+		})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"data": map[string]any{
+			"id": "me01d",
+			"attributes": map[string]any{
+				"full_name":     "Test User",
+				"given_name":    "Test",
+				"family_name":   "User",
+				"email_primary": "test@example.com",
+				"active":        true,
+			},
+		},
+	})
+}
 
 func (s *Server) handleNode(w http.ResponseWriter, r *http.Request) {
 	nodeID := extractNodeID(r.URL.Path)

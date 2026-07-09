@@ -97,33 +97,25 @@ func SaveToken(token string, noKeychain bool) error {
 	return writeTokenToFile(token)
 }
 
-// DeleteToken removes the token from both the keychain and the token file.
-// A "not found" keychain result or a missing token file are treated as success.
-func DeleteToken() error {
-	kerr := keyring.Delete(keychainService, keychainUser)
-	if kerr == keyring.ErrNotFound {
-		kerr = nil
+// DeleteToken removes the stored token from the token file and, best-effort,
+// from the OS keychain. The token file is the store gosf controls directly, so a
+// keychain error (e.g. a locked/unavailable keychain on a headless/HPC system)
+// is returned as a non-fatal warning rather than failing logout — the file is
+// still removed. Only a genuine file-removal failure is a hard error. A missing
+// token file or a "not found" keychain entry are treated as already-clean.
+func DeleteToken() (warning string, err error) {
+	if kerr := keyring.Delete(keychainService, keychainUser); kerr != nil && kerr != keyring.ErrNotFound {
+		warning = fmt.Sprintf("could not remove token from OS keychain: %v", kerr)
 	}
 
-	p, err := tokenFilePath()
-	var ferr error
-	if err != nil {
-		ferr = err
-	} else {
-		ferr = os.Remove(p)
-		if errors.Is(ferr, os.ErrNotExist) {
-			ferr = nil
-		}
+	p, perr := tokenFilePath()
+	if perr != nil {
+		return warning, perr
 	}
-
-	switch {
-	case kerr != nil && ferr != nil:
-		return fmt.Errorf("removing token from keychain (%v) and token file: %w", kerr, ferr)
-	case kerr != nil:
-		return fmt.Errorf("removing token from keychain: %w", kerr)
-	default:
-		return ferr
+	if rmErr := os.Remove(p); rmErr != nil && !errors.Is(rmErr, os.ErrNotExist) {
+		return warning, fmt.Errorf("removing token file: %w", rmErr)
 	}
+	return warning, nil
 }
 
 // writeTokenToFile writes the token to ~/.config/gosf/token with 0600 permissions.

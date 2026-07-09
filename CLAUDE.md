@@ -405,6 +405,15 @@ All other errors are printed to stderr and exit 1. `rootCmd.SilenceErrors = true
    OSF/Waterbutler diverges (e.g. the cross-project new-version push 404, captured
    by the skipped `TestLive_ComponentPushNewVersion` regression test).
 
+### Coverage
+
+`make cover` reports **merged unit + integration** coverage. Integration/live tests
+drive the compiled binary as a subprocess, so plain `go test -cover` misses them
+(and undercounts `cmd`). The harness builds the binary with `-cover` and points it
+at `GOCOVERDIR` when `GOSF_COVERDIR` is set; `go tool covdata` then merges the
+subprocess profiles with the unit `-coverprofile` into one number and
+`coverage/coverage.txt`. Real baseline: `cmd` ~75%, `internal/*` 84–98%.
+
 ### Branch model
 
 `dev` is the integration branch and the repo default: **PRs target `dev`** and get

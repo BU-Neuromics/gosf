@@ -60,7 +60,11 @@ func buildBinary() (string, error) {
 		return "", err
 	}
 	bin := filepath.Join(tmp, "gosf")
-	cmd := exec.Command("go", "build", "-o", bin, ".")
+	buildArgs := []string{"build", "-o", bin, "."}
+	if os.Getenv("GOSF_COVERDIR") != "" {
+		buildArgs = []string{"build", "-cover", "-o", bin, "."}
+	}
+	cmd := exec.Command("go", buildArgs...)
 	cmd.Dir = repoRoot
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return "", fmt.Errorf("build failed: %s", out)
@@ -118,6 +122,9 @@ func (e *liveEnv) run(args ...string) (stdout, stderr string, code int) {
 		"GOSF_API_BASE=",
 		"GOSF_FILES_BASE=",
 	)
+	if dir := os.Getenv("GOSF_COVERDIR"); dir != "" {
+		cmd.Env = append(cmd.Env, "GOCOVERDIR="+dir)
+	}
 	var outBuf, errBuf bytes.Buffer
 	cmd.Stdout = &outBuf
 	cmd.Stderr = &errBuf

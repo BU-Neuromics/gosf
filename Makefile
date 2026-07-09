@@ -12,7 +12,9 @@ export
 
 .DEFAULT_GOAL := help
 
-.PHONY: help build test integration live live-repro fmt vet check
+COVDIR := coverage
+
+.PHONY: help build test integration live live-repro fmt vet check cover
 
 help: ## List available targets
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) \
@@ -41,3 +43,12 @@ vet: ## go vet
 	$(GO) vet ./...
 
 check: fmt vet test integration ## Everything CI runs (except the live tier)
+
+cover: ## Merged unit + integration coverage (real end-to-end numbers)
+	rm -rf $(COVDIR); mkdir -p $(COVDIR)/unit $(COVDIR)/int
+	$(GO) test ./... -cover -args -test.gocoverdir=$(abspath $(COVDIR)/unit)
+	GOSF_COVERDIR=$(abspath $(COVDIR)/int) $(GO) test -tags integration -count=1 ./integration/...
+	@echo "── merged coverage ──"
+	$(GO) tool covdata percent -i=$(COVDIR)/unit,$(COVDIR)/int
+	$(GO) tool covdata textfmt -i=$(COVDIR)/unit,$(COVDIR)/int -o=$(COVDIR)/coverage.txt
+	@echo "full profile: $(COVDIR)/coverage.txt  (view: go tool cover -func=$(COVDIR)/coverage.txt)"
