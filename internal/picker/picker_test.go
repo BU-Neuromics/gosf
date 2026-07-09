@@ -31,11 +31,8 @@ func TestPicker_ExpandNavigateSelect(t *testing.T) {
 		t.Fatalf("initial rows = %d, want 2 (data, top.txt)", len(m.rows))
 	}
 
-	// Expand "data" (cursor 0).
+	// Expand "data" (cursor 0) → data, data/raw, data/notes.txt, top.txt = 4.
 	m = send(m, keyType(tea.KeyRight))
-	if len(m.rows) != 3 { // data, data/raw, data/notes.txt, ... wait top.txt too
-		// data(0) expanded → data, data/raw, data/notes.txt, top.txt = 4
-	}
 	if len(m.rows) != 4 {
 		t.Fatalf("after expanding data, rows = %d, want 4", len(m.rows))
 	}
