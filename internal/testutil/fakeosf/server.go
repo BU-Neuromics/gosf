@@ -119,8 +119,33 @@ type Server struct {
 	patches    []NodePatchRecord // PATCH /nodes/{id}/ requests received
 	folders    []string          // folder paths created via kind=folder PUT
 	validToken string            // when set, /v2/users/me/ requires this exact bearer token
+	forbidden  map[string]bool   // node IDs that respond 403 (simulate private/no-access)
 	nextID     int
 	mu         sync.Mutex
+}
+
+// SetForbidden makes node/file reads for nodeID respond 403, simulating a
+// private project the caller can't access.
+func (s *Server) SetForbidden(nodeID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.forbidden == nil {
+		s.forbidden = map[string]bool{}
+	}
+	s.forbidden[nodeID] = true
+}
+
+// forbid writes a 403 and returns true when nodeID is marked forbidden.
+func (s *Server) forbid(w http.ResponseWriter, nodeID string) bool {
+	s.mu.Lock()
+	f := s.forbidden[nodeID]
+	s.mu.Unlock()
+	if f {
+		writeJSON(w, http.StatusForbidden, map[string]any{
+			"errors": []map[string]any{{"detail": "You do not have permission to perform this action."}},
+		})
+	}
+	return f
 }
 
 // SetValidToken makes /v2/users/me/ accept only this bearer token (others 401).
@@ -446,6 +471,9 @@ func (s *Server) handleCurrentUser(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleNode(w http.ResponseWriter, r *http.Request) {
 	nodeID := extractNodeID(r.URL.Path)
+	if s.forbid(w, nodeID) {
+		return
+	}
 	s.mu.Lock()
 	proj, ok := s.projects[nodeID]
 	s.mu.Unlock()
@@ -472,6 +500,9 @@ func (s *Server) handleFileList(w http.ResponseWriter, r *http.Request) {
 	nodeID := extractNodeID(r.URL.Path)
 	parentID := r.URL.Query().Get("parent")
 
+	if s.forbid(w, nodeID) {
+		return
+	}
 	s.mu.Lock()
 	proj, ok := s.projects[nodeID]
 	s.mu.Unlock()
