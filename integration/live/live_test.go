@@ -37,29 +37,46 @@ func TestLive_PushNewThenNewVersion(t *testing.T) {
 	remote := e.project + ":" + dir + "/data.csv"
 
 	e.writeFile("data.csv", "col\nversion-one\n")
-	if _, stderr, code := e.run("push", "data.csv", remote, "--quiet"); code != 0 {
+	if _, stderr, code := e.runEventually("push", "data.csv", remote, "--quiet"); code != 0 {
 		t.Fatalf("first push exit %d; stderr=%s", code, stderr)
 	}
 
 	e.writeFile("data.csv", "col\nversion-two\n")
-	if _, stderr, code := e.run("push", "data.csv", remote, "--conflict=overwrite", "--quiet"); code != 0 {
+	if _, stderr, code := e.runEventually("push", "data.csv", remote, "--conflict=overwrite", "--quiet"); code != 0 {
 		t.Fatalf("second push (new version) exit %d; stderr=%s", code, stderr)
 	}
 
-	out, stderr, code := e.run("versions", remote, "--output=json")
-	if code != 0 {
-		t.Fatalf("versions exit %d; stderr=%s", code, stderr)
+	// Poll versions until the second version is reflected (metadata lag), then
+	// assert both distinct, correctly-numbered versions are present.
+	var nums []int
+	for i := 0; i < 40; i++ {
+		out, _, code := e.run("versions", remote, "--output=json")
+		if code != 0 {
+			continue
+		}
+		var vr struct {
+			Versions []struct {
+				Version int `json:"version"`
+			} `json:"versions"`
+		}
+		if json.Unmarshal([]byte(out), &vr) != nil {
+			continue
+		}
+		nums = nil
+		for _, v := range vr.Versions {
+			nums = append(nums, v.Version)
+		}
+		if len(nums) >= 2 {
+			break
+		}
 	}
-	var vr struct {
-		Versions []struct {
-			Version int `json:"version"`
-		} `json:"versions"`
+	if len(nums) != 2 {
+		t.Fatalf("expected 2 versions after two pushes, got %v", nums)
 	}
-	if err := json.Unmarshal([]byte(out), &vr); err != nil {
-		t.Fatalf("versions json: %v\n%s", err, out)
-	}
-	if len(vr.Versions) != 2 {
-		t.Errorf("expected 2 versions after two pushes, got %d:\n%s", len(vr.Versions), out)
+	// Version numbers must be the real OSF numbers (2,1), not 0,0 — guards the
+	// id-vs-attribute parsing fix.
+	if nums[0] != 2 || nums[1] != 1 {
+		t.Errorf("version numbers = %v, want [2 1]", nums)
 	}
 }
 
@@ -72,12 +89,12 @@ func TestLive_PullIdempotent(t *testing.T) {
 
 	content := "reproducible-input\n"
 	e.writeFile("payload.txt", content)
-	if _, stderr, code := e.run("push", "payload.txt", remote, "--quiet"); code != 0 {
+	if _, stderr, code := e.runEventually("push", "payload.txt", remote, "--quiet"); code != 0 {
 		t.Fatalf("push exit %d; stderr=%s", code, stderr)
 	}
 
 	// Pull to a fresh local path.
-	if _, stderr, code := e.run("pull", remote, "fetched.txt", "--no-track"); code != 0 {
+	if _, stderr, code := e.runEventually("pull", remote, "fetched.txt", "--no-track"); code != 0 {
 		t.Fatalf("pull exit %d; stderr=%s", code, stderr)
 	}
 	if got := e.readFile("fetched.txt"); got != content {
@@ -85,7 +102,7 @@ func TestLive_PullIdempotent(t *testing.T) {
 	}
 
 	// Second pull of the identical file must skip the transfer.
-	_, stderr, code := e.run("pull", remote, "fetched.txt", "--no-track")
+	_, stderr, code := e.runEventually("pull", remote, "fetched.txt", "--no-track")
 	if code != 0 {
 		t.Fatalf("second pull exit %d; stderr=%s", code, stderr)
 	}
@@ -101,17 +118,14 @@ func TestLive_Rm(t *testing.T) {
 	remote := e.project + ":" + dir + "/tmp.txt"
 
 	e.writeFile("tmp.txt", "delete me\n")
-	if _, stderr, code := e.run("push", "tmp.txt", remote, "--quiet"); code != 0 {
+	if _, stderr, code := e.runEventually("push", "tmp.txt", remote, "--quiet"); code != 0 {
 		t.Fatalf("push exit %d; stderr=%s", code, stderr)
 	}
-	if _, stderr, code := e.run("rm", remote, "--yes", "--quiet"); code != 0 {
+	if _, stderr, code := e.runEventually("rm", remote, "--yes", "--quiet"); code != 0 {
 		t.Fatalf("rm exit %d; stderr=%s", code, stderr)
 	}
-	// ls of the folder should no longer list the file.
-	out, _, _ := e.run("ls", e.project+":"+dir, "--output=json")
-	if strings.Contains(out, "tmp.txt") {
-		t.Errorf("file still present after rm:\n%s", out)
-	}
+	// The delete must propagate: the file no longer resolves.
+	e.waitGone(remote)
 }
 
 // TestLive_ComponentPushNewVersion is the regression test for the reported 404:
@@ -140,13 +154,13 @@ func TestLive_ComponentPushNewVersion(t *testing.T) {
 	}
 
 	// First push creates v1 in the component.
-	if _, stderr, code := e.run("push", "--yes", "--quiet"); code != 0 {
+	if _, stderr, code := e.runEventually("push", "--yes", "--quiet"); code != 0 {
 		t.Fatalf("first component push exit %d; stderr=%s", code, stderr)
 	}
 
 	// Change and push again → should create v2. Reportedly 404s today.
 	e.writeFile("counts.csv", "n\n1\n2\n")
-	if _, stderr, code := e.run("push", "--yes", "--quiet"); code != 0 {
+	if _, stderr, code := e.runEventually("push", "--yes", "--quiet"); code != 0 {
 		t.Fatalf("second component push (new version) exit %d; stderr=%s", code, stderr)
 	}
 

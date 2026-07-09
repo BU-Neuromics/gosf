@@ -143,13 +143,42 @@ func (e *liveEnv) run(args ...string) (stdout, stderr string, code int) {
 func (e *liveEnv) mkTempRemoteDir(node string) string {
 	e.t.Helper()
 	dir := fmt.Sprintf("/gosf-ci-%d-%d", time.Now().UnixNano(), os.Getpid())
-	if _, stderr, code := e.run("mkdir", node+":"+dir, "--quiet"); code != 0 {
+	if _, stderr, code := e.runEventually("mkdir", node+":"+dir, "--quiet"); code != 0 {
 		e.t.Fatalf("mkdir %s:%s failed: %s", node, dir, stderr)
 	}
 	e.t.Cleanup(func() {
-		e.run("rm", node+":"+dir, "--yes", "--quiet")
+		e.runEventually("rm", node+":"+dir, "--yes", "--quiet")
 	})
 	return dir
+}
+
+// runEventually retries a gosf command until it exits 0 (or a cap is hit),
+// tolerating OSF's eventual consistency: reads through the metadata API
+// (api.osf.io) can transiently 404 for a short window after a Waterbutler write
+// (files.osf.io), and the inconsistency is non-monotonic (a read may succeed,
+// then the next fails). A command that fails on a transient 404 did no work, so
+// retrying it is safe. Each attempt's network round-trip provides backoff.
+func (e *liveEnv) runEventually(args ...string) (stdout, stderr string, code int) {
+	e.t.Helper()
+	for i := 0; i < 40; i++ {
+		stdout, stderr, code = e.run(args...)
+		if code == 0 {
+			return
+		}
+	}
+	return
+}
+
+// waitGone polls until target no longer resolves (a delete has propagated to the
+// metadata API). Deletes lag just like writes under OSF's eventual consistency.
+func (e *liveEnv) waitGone(target string) {
+	e.t.Helper()
+	for i := 0; i < 40; i++ {
+		if _, _, code := e.run("ls", target, "--output=json"); code != 0 {
+			return
+		}
+	}
+	e.t.Fatalf("timed out waiting for %s to be gone (metadata lag)", target)
 }
 
 // writeFile creates a file (and parent dirs) under the test working dir.
