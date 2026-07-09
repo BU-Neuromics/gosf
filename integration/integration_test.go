@@ -2091,3 +2091,137 @@ func TestColor_JSONNeverColored(t *testing.T) {
 		t.Fatalf("json not parseable: %v\n%s", err, out)
 	}
 }
+
+// ---- Error paths ----
+
+func TestLs_NotFoundProject(t *testing.T) {
+	env := newTestEnv(t)
+	_, stderr, code := env.run("ls", "nope1")
+	if code == 0 {
+		t.Fatal("ls of a nonexistent project should fail")
+	}
+	if !strings.Contains(stderr, "404") {
+		t.Errorf("expected a 404 error, got %q", stderr)
+	}
+}
+
+func TestLs_ForbiddenProject_FriendlyAuthError(t *testing.T) {
+	env := newTestEnv(t)
+	env.srv.AddProject("priv01", "Private")
+	env.srv.SetForbidden("priv01")
+
+	_, stderr, code := env.run("ls", "priv01")
+	if code == 0 {
+		t.Fatal("ls of a forbidden project should fail")
+	}
+	if !strings.Contains(stderr, "gosf auth login") || !strings.Contains(stderr, "403") {
+		t.Errorf("expected a friendly 403 auth hint, got %q", stderr)
+	}
+}
+
+func TestPull_ForbiddenProject_FriendlyAuthError(t *testing.T) {
+	env := newTestEnv(t)
+	env.srv.AddProject("priv02", "Private")
+	env.srv.SetForbidden("priv02")
+
+	_, stderr, code := env.run("pull", "priv02:/x.csv", "--no-track")
+	if code == 0 || !strings.Contains(stderr, "gosf auth login") {
+		t.Errorf("expected a friendly 403 auth hint on pull; code=%d stderr=%q", code, stderr)
+	}
+}
+
+func TestPull_PathNotFound(t *testing.T) {
+	env := newTestEnv(t)
+	env.srv.AddProject("abc12", "Test")
+	_, stderr, code := env.run("pull", "abc12:/missing.csv", "--no-track")
+	if code == 0 || !strings.Contains(stderr, "not found") {
+		t.Errorf("expected 'not found'; code=%d stderr=%q", code, stderr)
+	}
+}
+
+func TestPull_VersionOnDirectory(t *testing.T) {
+	env := newTestEnv(t)
+	env.srv.AddProject("abc12", "Test")
+	env.srv.AddFile("abc12", "/data/a.csv", []byte("a"))
+	env.srv.AddFile("abc12", "/data/b.csv", []byte("b"))
+
+	_, stderr, code := env.run("pull", "abc12:/data", "out/", "--version=1", "--no-track")
+	if code == 0 || !strings.Contains(stderr, "single file") {
+		t.Errorf("expected --version single-file error; code=%d stderr=%q", code, stderr)
+	}
+}
+
+func TestPull_VersionNotFound(t *testing.T) {
+	env := newTestEnv(t)
+	env.srv.AddProject("abc12", "Test")
+	env.srv.AddFile("abc12", "/data.csv", []byte("v1"))
+
+	_, stderr, code := env.run("pull", "abc12:/data.csv", "--version=99", "--no-track")
+	if code == 0 || !strings.Contains(stderr, "99") {
+		t.Errorf("expected version-99-not-found error; code=%d stderr=%q", code, stderr)
+	}
+}
+
+func TestPush_ParentFolderMissing(t *testing.T) {
+	env := newTestEnv(t)
+	env.srv.AddProject("abc12", "Test")
+	env.writeFile("x.csv", "data")
+
+	_, stderr, code := env.run("push", "x.csv", "abc12:/nope/x.csv", "--no-track", "--quiet")
+	if code == 0 || !strings.Contains(stderr, "not accessible") {
+		t.Errorf("expected 'not accessible' for a missing parent folder; code=%d stderr=%q", code, stderr)
+	}
+}
+
+func TestPush_ConflictRename(t *testing.T) {
+	env := newTestEnv(t)
+	env.srv.AddProject("abc12", "Test")
+	env.srv.AddFile("abc12", "/data.csv", []byte("existing"))
+	env.writeFile("data.csv", "new content")
+
+	_, stderr, code := env.run("push", "data.csv", "abc12:/data.csv", "--conflict=rename", "--no-track", "--quiet")
+	if code != 0 {
+		t.Fatalf("rename push exit %d; stderr=%s", code, stderr)
+	}
+	out, _, _ := env.run("ls", "abc12", "--output=json")
+	if !strings.Contains(out, "data_1.csv") {
+		t.Errorf("expected a renamed data_1.csv to be created:\n%s", out)
+	}
+}
+
+func TestPush_ConflictInvalid(t *testing.T) {
+	env := newTestEnv(t)
+	env.srv.AddProject("abc12", "Test")
+	env.writeFile("x.csv", "data")
+	_, stderr, code := env.run("push", "x.csv", "abc12:/x.csv", "--conflict=bogus", "--quiet")
+	if code == 0 || !strings.Contains(stderr, "conflict") {
+		t.Errorf("expected a --conflict validation error; code=%d stderr=%q", code, stderr)
+	}
+}
+
+func TestRm_NotFound(t *testing.T) {
+	env := newTestEnv(t)
+	env.srv.AddProject("abc12", "Test")
+	_, stderr, code := env.run("rm", "abc12:/missing.csv", "--yes", "--quiet")
+	if code == 0 || !strings.Contains(stderr, "not found") {
+		t.Errorf("expected 'not found' on rm of a missing path; code=%d stderr=%q", code, stderr)
+	}
+}
+
+func TestStatus_MalformedManifest(t *testing.T) {
+	env := newTestEnv(t)
+	env.srv.AddProject("abc12", "Test")
+	// Entry missing the required `direction` field → load must fail.
+	env.writeFile(".gosf/gosf.toml", `[project]
+id = "abc12"
+
+[[files]]
+local  = "x.csv"
+remote = "/x.csv"
+version = 0
+`)
+	_, stderr, code := env.run("status")
+	if code == 0 || !strings.Contains(stderr, "direction") {
+		t.Errorf("expected a manifest validation error mentioning direction; code=%d stderr=%q", code, stderr)
+	}
+}
