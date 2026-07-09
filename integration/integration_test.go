@@ -1872,3 +1872,56 @@ md5       = ""
 		t.Errorf("expected 1 upload with --force, got %d", len(env.srv.Uploads()))
 	}
 }
+
+// ---- Color control ----
+
+// TestColor_FlagControlsANSI verifies the --color flag forces ANSI on/off, and
+// that auto mode (piped to a non-TTY here) stays plain — proving scripts are
+// unaffected.
+func TestColor_FlagControlsANSI(t *testing.T) {
+	env := newTestEnv(t)
+	env.srv.AddProject("abc12", "Test Project")
+	env.srv.AddFile("abc12", "/a.csv", []byte("x"))
+
+	always, _, code := env.run("ls", "abc12", "--color=always")
+	if code != 0 {
+		t.Fatalf("ls --color=always exit %d", code)
+	}
+	if !strings.Contains(always, "\x1b[") {
+		t.Errorf("--color=always should emit ANSI escapes, got %q", always)
+	}
+
+	never, _, code2 := env.run("ls", "abc12", "--color=never")
+	if code2 != 0 {
+		t.Fatalf("ls --color=never exit %d", code2)
+	}
+	if strings.Contains(never, "\x1b[") {
+		t.Errorf("--color=never should emit no ANSI, got %q", never)
+	}
+
+	// Default auto mode, output captured to a buffer (not a TTY) → no color.
+	auto, _, _ := env.run("ls", "abc12")
+	if strings.Contains(auto, "\x1b[") {
+		t.Errorf("auto mode off a TTY should emit no ANSI, got %q", auto)
+	}
+}
+
+// TestColor_JSONNeverColored guards the JSON contract: even with --color=always,
+// json output must be plain so it stays parseable.
+func TestColor_JSONNeverColored(t *testing.T) {
+	env := newTestEnv(t)
+	env.srv.AddProject("abc12", "Test Project")
+	env.srv.AddFile("abc12", "/a.csv", []byte("x"))
+
+	out, _, code := env.run("ls", "abc12", "--output=json", "--color=always")
+	if code != 0 {
+		t.Fatalf("exit %d", code)
+	}
+	if strings.Contains(out, "\x1b[") {
+		t.Errorf("json output must never contain ANSI, got %q", out)
+	}
+	var items []map[string]any
+	if err := json.Unmarshal([]byte(out), &items); err != nil {
+		t.Fatalf("json not parseable: %v\n%s", err, out)
+	}
+}

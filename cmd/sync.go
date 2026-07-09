@@ -188,20 +188,20 @@ func processPushEntry(
 	switch state {
 	case manifest.StateInSync:
 		if !quiet {
-			fmt.Printf("✓  %s (v%d)\n", entry.Local, entry.Version)
+			fmt.Printf("%s  %s (v%d)\n", output.Green("✓"), entry.Local, entry.Version)
 		}
 		return "in_sync", false, nil
 
 	case manifest.StateMissing:
 		if !quiet {
-			fmt.Printf("✗  %s  missing locally, skipping\n", entry.Local)
+			fmt.Printf("%s  %s  missing locally, skipping\n", output.Red("✗"), entry.Local)
 		}
 		return "skipped_missing", false, nil
 
 	case manifest.StateNotPushed:
 		if _, statErr := os.Stat(localAbs); os.IsNotExist(statErr) {
 			if !quiet {
-				fmt.Printf("·  %s  not found locally, skipping\n", entry.Local)
+				fmt.Printf("%s  %s  not found locally, skipping\n", output.Dim("·"), entry.Local)
 			}
 			return "skipped_not_found", false, nil
 		}
@@ -242,14 +242,14 @@ func pinEntry(entry *manifest.Entry, remoteVersions []manifest.RemoteVersion, qu
 	latest := latestRemoteVersionInfo(remoteVersions)
 	if dryRun {
 		if !jsonMode {
-			fmt.Printf("[dry-run] ≡  %s  identical to remote v%d, would pin\n", entry.Local, latest.Version)
+			fmt.Printf("[dry-run] %s  %s  identical to remote v%d, would pin\n", output.Dim("≡"), entry.Local, latest.Version)
 		}
 		return "pin", false, nil
 	}
 	entry.Version = latest.Version
 	entry.MD5 = latest.MD5
 	if !quiet {
-		fmt.Printf("≡  %s  identical to remote v%d, pinned (no transfer)\n", entry.Local, latest.Version)
+		fmt.Printf("%s  %s  identical to remote v%d, pinned (no transfer)\n", output.Dim("≡"), entry.Local, latest.Version)
 	}
 	return "pinned", true, nil
 }
@@ -269,11 +269,11 @@ func pushFile(
 	if dryRun {
 		if currentVersion == 0 {
 			if !jsonMode {
-				fmt.Printf("[dry-run] ↑  %s  (first push → v1)\n", entry.Local)
+				fmt.Printf("[dry-run] %s  %s  (first push → v1)\n", output.Cyan("↑"), entry.Local)
 			}
 		} else {
 			if !jsonMode {
-				fmt.Printf("[dry-run] ↑  %s  v%d → v%d\n", entry.Local, oldVer, oldVer+1)
+				fmt.Printf("[dry-run] %s  %s  v%d → v%d\n", output.Cyan("↑"), entry.Local, oldVer, oldVer+1)
 			}
 		}
 		return "push", false, nil
@@ -297,11 +297,11 @@ func pushFile(
 
 	if currentVersion == 0 {
 		if !quiet {
-			fmt.Printf("↑  %s  (first push → v%d)\n", entry.Local, newVer)
+			fmt.Printf("%s  %s  (first push → v%d)\n", output.Cyan("↑"), entry.Local, newVer)
 		}
 	} else {
 		if !quiet {
-			fmt.Printf("↑  %s  v%d → v%d\n", entry.Local, oldVer, newVer)
+			fmt.Printf("%s  %s  v%d → v%d\n", output.Cyan("↑"), entry.Local, oldVer, newVer)
 		}
 	}
 
@@ -345,7 +345,7 @@ func processPullEntry(
 	switch state {
 	case manifest.StateInSync:
 		if !quiet {
-			fmt.Printf("✓  %s (v%d)\n", entry.Local, entry.Version)
+			fmt.Printf("%s  %s (v%d)\n", output.Green("✓"), entry.Local, entry.Version)
 		}
 		return "in_sync", false, nil
 
@@ -374,7 +374,7 @@ func processPullEntry(
 	case manifest.StateAheadOfManifest:
 		if !force {
 			if !quiet {
-				fmt.Printf("  ~  %s  locally modified, skipping.\n     Use --force to overwrite with the pinned version.\n", entry.Local)
+				fmt.Printf("  %s  %s  locally modified, skipping.\n     Use --force to overwrite with the pinned version.\n", output.Yellow("~"), entry.Local)
 			}
 			return "skipped_modified", false, nil
 		}
@@ -382,7 +382,7 @@ func processPullEntry(
 			return "skipped_unresolved", false, nil
 		}
 		if !quiet {
-			fmt.Fprintf(os.Stderr, "  !  Overwriting locally modified file: %s\n", entry.Local)
+			fmt.Fprintf(os.Stderr, "  %s  Overwriting locally modified file: %s\n", output.Yellow("!"), entry.Local)
 		}
 		return downloadAndPin(ctx, entry, resolvedItem, wb, localAbs, entry.Version, false, remoteVersions, quiet, jsonMode, dryRun, "pull_force")
 
@@ -394,13 +394,13 @@ func processPullEntry(
 			return "skipped_unresolved", false, nil
 		}
 		if !quiet {
-			fmt.Fprintf(os.Stderr, "  !  Resolving divergence by taking remote: %s\n", entry.Local)
+			fmt.Fprintf(os.Stderr, "  %s  Resolving divergence by taking remote: %s\n", output.Yellow("!"), entry.Local)
 		}
 		return downloadAndPin(ctx, entry, resolvedItem, wb, localAbs, 0, true, remoteVersions, quiet, jsonMode, dryRun, "pull_theirs")
 
 	case manifest.StateNotPushed:
 		if !quiet {
-			fmt.Printf("·  %s  not yet pushed\n", entry.Local)
+			fmt.Printf("%s  %s  not yet pushed\n", output.Dim("·"), entry.Local)
 		}
 		return "skipped_not_pushed", false, nil
 	}
@@ -431,7 +431,7 @@ func downloadAndPin(
 	}
 	if dryRun {
 		if !jsonMode {
-			fmt.Printf("[dry-run] ↓  %s  (%s)\n", entry.Local, label)
+			fmt.Printf("[dry-run] %s  %s  (%s)\n", output.Cyan("↓"), entry.Local, label)
 		}
 		return action, false, nil
 	}
@@ -459,7 +459,7 @@ func downloadAndPin(
 		return "", false, fmt.Errorf("MD5 mismatch after downloading %s: expected %s, got %s", entry.Local, entry.MD5, gotMD5)
 	}
 	if !quiet {
-		fmt.Printf("↓  %s  (%s)\n", entry.Local, label)
+		fmt.Printf("%s  %s  (%s)\n", output.Cyan("↓"), entry.Local, label)
 	}
 	return action, true, nil
 }

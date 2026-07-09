@@ -102,7 +102,10 @@ gosf/
 │   ├── config/
 │   │   └── config.go       # config file + keychain + env
 │   └── output/
-│       └── format.go       # human-readable vs --output=json
+│       ├── format.go       # human-readable vs --output=json
+│       ├── style.go        # color init + Green/Red/Yellow/Cyan/Bold/Dim helpers
+│       ├── table.go        # ANSI-safe aligned table renderer (Cell, RenderTable)
+│       └── spinner.go      # indeterminate-wait spinner (no-op off a TTY)
 ├── go.mod
 ├── .goreleaser.yaml
 ├── CLAUDE.md
@@ -117,6 +120,21 @@ gosf/
 - `--conflict=skip|overwrite|rename` on push (default: skip)
 - `--quiet` suppresses progress/non-error output
 - Proper non-zero exit codes on errors
+- Colorized output (`fatih/color`) + spinners (`briandowns/spinner`) for
+  indeterminate waits. Color is resolved once in `root.go`'s `PersistentPreRunE`
+  via `output.InitColor`: on only when stdout is a TTY, forced off under
+  `--output=json` (hard invariant — machine output is never colored), `--quiet`,
+  and `NO_COLOR`. Global `--color=auto|always|never` overrides. All styling flows
+  through the `internal/output` helpers, so it degrades to plain automatically.
+
+### Colorized tables
+
+`text/tabwriter` measures width in bytes and misaligns once ANSI codes are
+present, so colored tables (`ls`, `status`, `versions`, `projects`) use
+`output.RenderTable(header, [][]output.Cell)` instead: each `Cell{Text, Style}`
+is padded on its *plain* text, then the `Style` func colors the padded cell, so
+columns line up identically with color on or off. The final column is never
+padded (no trailing whitespace). `output.NewTabWriter`/`PrintHeader` were removed.
 
 ### `--output=json` contract
 

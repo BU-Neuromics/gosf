@@ -4,8 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"strings"
-	"text/tabwriter"
 	"time"
 )
 
@@ -14,11 +12,6 @@ func PrintJSON(w io.Writer, v any) error {
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
 	return enc.Encode(v)
-}
-
-// NewTabWriter returns a tabwriter suitable for aligned columns.
-func NewTabWriter(w io.Writer) *tabwriter.Writer {
-	return tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 }
 
 // FormatSize returns a human-readable file size string.
@@ -61,9 +54,4 @@ func FormatDate(s string) string {
 		return s[:10]
 	}
 	return s
-}
-
-// PrintHeader prints the column header for a file listing.
-func PrintHeader(w *tabwriter.Writer) {
-	fmt.Fprintln(w, strings.Join([]string{"NAME", "SIZE", "MODIFIED"}, "\t"))
 }
