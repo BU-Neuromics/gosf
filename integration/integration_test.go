@@ -2225,3 +2225,14 @@ version = 0
 		t.Errorf("expected a manifest validation error mentioning direction; code=%d stderr=%q", code, stderr)
 	}
 }
+
+func TestStatus_NoManifest_SuggestsInit(t *testing.T) {
+	env := newTestEnv(t)
+	_, stderr, code := env.run("status")
+	if code == 0 {
+		t.Fatal("status without a manifest should fail")
+	}
+	if !strings.Contains(stderr, "gosf init") {
+		t.Errorf("missing-manifest error should suggest 'gosf init', got %q", stderr)
+	}
+}
