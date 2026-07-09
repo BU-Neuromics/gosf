@@ -133,13 +133,10 @@ func TestLive_Rm(t *testing.T) {
 // different node than the manifest's default project), driven through the
 // manifest with a per-entry `project` override.
 //
-// The subfolder-upload ID fix (new files now target the parent folder's ID-based
-// links.upload) likely resolves this too, but it hasn't been verified against
-// live OSF yet. Still skipped so the dev live-suite stays green; un-skip and run
-// privately to confirm the fix covers the cross-project case.
+// Verified fixed by the subfolder-upload ID fix (new files target the parent
+// folder's ID-based links.upload) together with the version-number fix — this
+// runs green against live OSF, so it stays active as a regression guard.
 func TestLive_ComponentPushNewVersion(t *testing.T) {
-	t.Skip("un-skip and run live to confirm the subfolder-upload fix also covers cross-project new-version push")
-
 	e := requireLive(t)
 	comp := e.requireComponent()
 	dir := e.mkTempRemoteDir(comp)
@@ -158,14 +155,23 @@ func TestLive_ComponentPushNewVersion(t *testing.T) {
 		t.Fatalf("first component push exit %d; stderr=%s", code, stderr)
 	}
 
-	// Change and push again → should create v2. Reportedly 404s today.
+	// Change and push again → a new version in the component (this is the
+	// operation that originally 404'd).
 	e.writeFile("counts.csv", "n\n1\n2\n")
 	if _, stderr, code := e.runEventually("push", "--yes", "--quiet"); code != 0 {
 		t.Fatalf("second component push (new version) exit %d; stderr=%s", code, stderr)
 	}
 
-	out, _, _ := e.run("versions", comp+":"+dir+"/counts.csv", "--output=json")
-	if !strings.Contains(out, `"version": 2`) {
-		t.Errorf("expected a v2 in the component after re-push:\n%s", out)
+	// Poll until the second version is reflected (metadata lag).
+	saw := false
+	for i := 0; i < 40; i++ {
+		out, _, code := e.run("versions", comp+":"+dir+"/counts.csv", "--output=json")
+		if code == 0 && strings.Contains(out, `"version": 2`) {
+			saw = true
+			break
+		}
+	}
+	if !saw {
+		t.Error("expected a v2 in the component after re-push")
 	}
 }
