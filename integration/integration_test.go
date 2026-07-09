@@ -1438,6 +1438,7 @@ func TestOpen_JSON_File(t *testing.T) {
 func TestMkdir_Basic(t *testing.T) {
 	env := newTestEnv(t)
 	env.srv.AddProject("abc12", "Test Project")
+	env.srv.AddFolder("abc12", "/results") // parent must exist to create a subfolder
 
 	_, stderr, code := env.run("mkdir", "abc12:/results/2026")
 	if code != 0 {
@@ -1452,9 +1453,24 @@ func TestMkdir_Basic(t *testing.T) {
 	}
 }
 
+func TestMkdir_RootLevel(t *testing.T) {
+	env := newTestEnv(t)
+	env.srv.AddProject("abc12", "Test Project")
+
+	_, stderr, code := env.run("mkdir", "abc12:/toplevel")
+	if code != 0 {
+		t.Fatalf("root-level mkdir exit %d; stderr=%s", code, stderr)
+	}
+	flds := env.srv.Folders()
+	if len(flds) == 0 || flds[0] != "/toplevel" {
+		t.Errorf("folders = %v, want [/toplevel]", flds)
+	}
+}
+
 func TestMkdir_JSON(t *testing.T) {
 	env := newTestEnv(t)
 	env.srv.AddProject("abc12", "Test Project")
+	env.srv.AddFolder("abc12", "/data") // parent must exist to create a subfolder
 
 	stdout, _, code := env.run("mkdir", "abc12:/data/raw", "--output=json")
 	if code != 0 {

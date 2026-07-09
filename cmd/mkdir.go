@@ -59,8 +59,17 @@ Examples:
 			return nil
 		}
 
+		// osfstorage addresses folders by opaque ID, so the create URL must come
+		// from the parent folder's ID-based link (or the storage root), never a
+		// name-built path.
+		res := resolver.New(client.New(token))
+		base, err := folderUploadBase(cmd.Context(), res, target.NodeID, parentPath)
+		if err != nil {
+			return err
+		}
+
 		wb := client.NewWaterbutler(token)
-		if err := wb.CreateFolder(cmd.Context(), target.NodeID, parentPath, folderName); err != nil {
+		if err := wb.CreateFolder(cmd.Context(), client.AppendFolderName(base, folderName)); err != nil {
 			return fmt.Errorf("creating folder %s: %w", folderPath, err)
 		}
 
