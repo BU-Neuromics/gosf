@@ -5,19 +5,18 @@ import (
 	"io"
 	"os"
 
+	"golang.org/x/term"
+
 	"github.com/BU-Neuromics/gosf/internal/client"
 	"github.com/BU-Neuromics/gosf/internal/manifest"
 	"github.com/BU-Neuromics/gosf/internal/output"
 )
 
-// isInteractive reports whether stdin is a terminal, i.e. whether a
-// confirmation prompt can actually be answered.
+// isInteractive reports whether stdin is a real terminal, i.e. whether a prompt
+// can actually be answered. Uses term.IsTerminal rather than a char-device check
+// so /dev/null and pipes (e.g. in CI) correctly read as non-interactive.
 func isInteractive() bool {
-	fi, err := os.Stdin.Stat()
-	if err != nil {
-		return false
-	}
-	return fi.Mode()&os.ModeCharDevice != 0
+	return term.IsTerminal(int(os.Stdin.Fd()))
 }
 
 // printPushPlan writes the rich, per-file push description used by the

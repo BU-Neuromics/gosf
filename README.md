@@ -188,6 +188,24 @@ abc12/xyz34:/path             # path inside component xyz34 of project abc12
 
 ## Commands
 
+### `gosf onboard`
+
+Guided, interactive setup — the easiest way to start. It detects your current
+state and resumes at the right step, so it's safe to re-run:
+
+1. **Authenticate** (offered if you're not logged in).
+2. **Attach a project** — type a GUID or pick from your project list.
+3. **Select files to push** — a collapsible file-tree of the things git doesn't
+   track (data, models, artifacts); check individual files or whole directories.
+
+It records your picks in `.gosf/gosf.toml` as `direction=push` entries and stops
+there; run `gosf sync` to upload. Requires an interactive terminal.
+
+```console
+$ gosf onboard
+$ gosf onboard --project abc12 --remote-base /inputs   # skip the prompts
+```
+
 ### `gosf ls <project>[:<path>]`
 
 List files and folders.
