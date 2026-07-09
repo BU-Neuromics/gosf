@@ -110,16 +110,50 @@ type NodePatchRecord struct {
 
 // Server is a combined fake OSF metadata + Waterbutler HTTP server.
 type Server struct {
-	srv      *httptest.Server
-	projects map[string]*fakeProject
-	allFiles map[string]*File // all files across projects, keyed by ID
-	uploads  []UploadRecord
-	deletes  []string          // file IDs that received a DELETE request
-	moves    []MoveRecord      // move/copy/rename actions received
-	patches  []NodePatchRecord // PATCH /nodes/{id}/ requests received
-	folders  []string          // folder paths created via kind=folder PUT
-	nextID   int
-	mu       sync.Mutex
+	srv        *httptest.Server
+	projects   map[string]*fakeProject
+	allFiles   map[string]*File // all files across projects, keyed by ID
+	uploads    []UploadRecord
+	deletes    []string          // file IDs that received a DELETE request
+	moves      []MoveRecord      // move/copy/rename actions received
+	patches    []NodePatchRecord // PATCH /nodes/{id}/ requests received
+	folders    []string          // folder paths created via kind=folder PUT
+	validToken string            // when set, /v2/users/me/ requires this exact bearer token
+	forbidden  map[string]bool   // node IDs that respond 403 (simulate private/no-access)
+	nextID     int
+	mu         sync.Mutex
+}
+
+// SetForbidden makes node/file reads for nodeID respond 403, simulating a
+// private project the caller can't access.
+func (s *Server) SetForbidden(nodeID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.forbidden == nil {
+		s.forbidden = map[string]bool{}
+	}
+	s.forbidden[nodeID] = true
+}
+
+// forbid writes a 403 and returns true when nodeID is marked forbidden.
+func (s *Server) forbid(w http.ResponseWriter, nodeID string) bool {
+	s.mu.Lock()
+	f := s.forbidden[nodeID]
+	s.mu.Unlock()
+	if f {
+		writeJSON(w, http.StatusForbidden, map[string]any{
+			"errors": []map[string]any{{"detail": "You do not have permission to perform this action."}},
+		})
+	}
+	return f
+}
+
+// SetValidToken makes /v2/users/me/ accept only this bearer token (others 401).
+// When unset (default), any non-empty bearer token authenticates.
+func (s *Server) SetValidToken(token string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.validToken = token
 }
 
 // New creates and starts a new fake server.
@@ -172,6 +206,15 @@ func (s *Server) AddVersion(projectID, filePath string, content []byte) *File {
 	next := f.Versions[len(f.Versions)-1].num + 1
 	f.Versions = append(f.Versions, fileVer{num: next, content: content, md5: fmt.Sprintf("%x", h[:])})
 	return f
+}
+
+// AddFolder ensures a folder (and any parents) exists in a project and returns
+// it. Test-only helper for setting up subfolders to push into.
+func (s *Server) AddFolder(projectID, folderPath string) *File {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	proj := s.projects[projectID]
+	return s.ensureFolderLocked(proj, folderPath)
 }
 
 func (s *Server) addFileLocked(projectID, filePath string, content []byte) *File {
@@ -295,6 +338,8 @@ func (s *Server) GetFile(projectID, filePath string) *File {
 func (s *Server) handler(w http.ResponseWriter, r *http.Request) {
 	p := r.URL.Path
 	switch {
+	case r.Method == http.MethodGet && p == "/v2/users/me/":
+		s.handleCurrentUser(w, r)
 	case r.Method == http.MethodGet && p == "/v2/users/me/nodes/":
 		s.handleUserNodes(w, r)
 	case r.Method == http.MethodGet && strings.HasPrefix(p, "/v2/nodes/") && strings.Contains(p, "/files/osfstorage/"):
@@ -361,12 +406,7 @@ func (s *Server) fileItemJSON(nodeID string, f *File) map[string]any {
 			"materialized_path": f.FilePath,
 			"extra":             map[string]any{"hashes": map[string]any{"md5": md5Str}},
 		},
-		"links": map[string]any{
-			"download": fmt.Sprintf("%s/v1/files/%s", base, f.ID),
-			"upload":   fmt.Sprintf("%s/v1/files/%s/upload", base, f.ID),
-			"delete":   fmt.Sprintf("%s/v1/files/%s/delete", base, f.ID),
-			"move":     fmt.Sprintf("%s/v1/files/%s/move", base, f.ID),
-		},
+		"links": s.itemLinks(nodeID, f),
 		"relationships": map[string]any{
 			"files": map[string]any{
 				"links": map[string]any{
@@ -379,10 +419,61 @@ func (s *Server) fileItemJSON(nodeID string, f *File) map[string]any {
 	}
 }
 
+// itemLinks builds the action links for a file or folder. A folder's upload /
+// new_folder links are ID-based Waterbutler resource URLs (osfstorage addresses
+// folders by opaque ID); a file's upload link is its own version-upload endpoint.
+func (s *Server) itemLinks(nodeID string, f *File) map[string]any {
+	base := s.URL()
+	links := map[string]any{
+		"download": fmt.Sprintf("%s/v1/files/%s", base, f.ID),
+		"delete":   fmt.Sprintf("%s/v1/files/%s/delete", base, f.ID),
+		"move":     fmt.Sprintf("%s/v1/files/%s/move", base, f.ID),
+	}
+	if f.IsFolder {
+		folderBase := fmt.Sprintf("%s/v1/resources/%s/providers/osfstorage/%s/", base, nodeID, f.ID)
+		links["upload"] = folderBase
+		links["new_folder"] = folderBase + "?kind=folder"
+	} else {
+		links["upload"] = fmt.Sprintf("%s/v1/files/%s/upload", base, f.ID)
+	}
+	return links
+}
+
 // --- Handler implementations ---
+
+// handleCurrentUser serves GET /v2/users/me/, validating the bearer token.
+func (s *Server) handleCurrentUser(w http.ResponseWriter, r *http.Request) {
+	bearer := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+	s.mu.Lock()
+	valid := s.validToken
+	s.mu.Unlock()
+
+	authOK := bearer != "" && (valid == "" || bearer == valid)
+	if !authOK {
+		writeJSON(w, http.StatusUnauthorized, map[string]any{
+			"errors": []map[string]any{{"detail": "User provided an invalid OAuth2 access token"}},
+		})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"data": map[string]any{
+			"id": "me01d",
+			"attributes": map[string]any{
+				"full_name":     "Test User",
+				"given_name":    "Test",
+				"family_name":   "User",
+				"email_primary": "test@example.com",
+				"active":        true,
+			},
+		},
+	})
+}
 
 func (s *Server) handleNode(w http.ResponseWriter, r *http.Request) {
 	nodeID := extractNodeID(r.URL.Path)
+	if s.forbid(w, nodeID) {
+		return
+	}
 	s.mu.Lock()
 	proj, ok := s.projects[nodeID]
 	s.mu.Unlock()
@@ -409,6 +500,9 @@ func (s *Server) handleFileList(w http.ResponseWriter, r *http.Request) {
 	nodeID := extractNodeID(r.URL.Path)
 	parentID := r.URL.Query().Get("parent")
 
+	if s.forbid(w, nodeID) {
+		return
+	}
 	s.mu.Lock()
 	proj, ok := s.projects[nodeID]
 	s.mu.Unlock()
@@ -461,9 +555,10 @@ func (s *Server) handleVersions(w http.ResponseWriter, r *http.Request) {
 	for i := len(f.Versions) - 1; i >= 0; i-- {
 		v := f.Versions[i]
 		versions = append(versions, map[string]any{
-			"id": fmt.Sprintf("ver%d-%s", v.num, f.ID),
+			// Real OSF carries the version number as the JSON:API id (e.g. "2"),
+			// with NO version attribute — model that faithfully.
+			"id": fmt.Sprintf("%d", v.num),
 			"attributes": map[string]any{
-				"version":      v.num,
 				"size":         int64(len(v.content)),
 				"date_created": "2024-01-01T00:00:00",
 				"extra": map[string]any{
@@ -527,7 +622,11 @@ func (s *Server) handleNewUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	nodeID := rest[:slashIdx]
-	pathPart := rest[slashIdx+len(provSuffix):]
+	// The segment after osfstorage/ is the parent folder's opaque object ID
+	// (empty = storage root) — NOT a name. This mirrors real Waterbutler, which
+	// 404s a name-based path; it is what lets these tests catch the subfolder
+	// upload bug that a name-lenient fake would hide.
+	parentID := strings.Trim(rest[slashIdx+len(provSuffix):], "/")
 
 	name := r.URL.Query().Get("name")
 	if name == "" {
@@ -539,24 +638,28 @@ func (s *Server) handleNewUpload(w http.ResponseWriter, r *http.Request) {
 		kind = "file"
 	}
 
-	var parentPath string
-	if pathPart == "" || strings.Trim(pathPart, "/") == "" {
-		parentPath = "/"
-	} else {
-		parentPath = "/" + strings.Trim(pathPart, "/")
-	}
-	fullPath := parentPath
-	if fullPath == "/" {
-		fullPath = "/" + name
-	} else {
-		fullPath = fullPath + "/" + name
-	}
-
 	if kind == "folder" {
+		// Like file upload, the destination is addressed by the parent folder's
+		// opaque ID (empty = root); a name/unknown segment 404s, as real OSF does.
 		s.mu.Lock()
-		if proj, ok := s.projects[nodeID]; ok {
-			s.ensureFolderLocked(proj, fullPath)
+		proj, ok := s.projects[nodeID]
+		if !ok {
+			s.mu.Unlock()
+			http.NotFound(w, r)
+			return
 		}
+		parentPath := "/"
+		if parentID != "" {
+			pf, found := proj.byID[parentID]
+			if !found || !pf.IsFolder {
+				s.mu.Unlock()
+				http.NotFound(w, r)
+				return
+			}
+			parentPath = pf.FilePath
+		}
+		fullPath := strings.TrimRight(parentPath, "/") + "/" + name
+		s.ensureFolderLocked(proj, fullPath)
 		s.folders = append(s.folders, fullPath)
 		s.mu.Unlock()
 		writeJSON(w, http.StatusCreated, map[string]any{
@@ -577,20 +680,41 @@ func (s *Server) handleNewUpload(w http.ResponseWriter, r *http.Request) {
 	md5Str := fmt.Sprintf("%x", h[:])
 
 	s.mu.Lock()
-	if proj, ok := s.projects[nodeID]; ok {
-		s.nextID++
-		f := &File{
-			ID:       fmt.Sprintf("f%d", s.nextID),
-			Name:     name,
-			FilePath: fullPath,
-			Versions: []fileVer{{num: 1, content: content, md5: md5Str}},
+	proj, ok := s.projects[nodeID]
+	if !ok {
+		s.mu.Unlock()
+		http.NotFound(w, r)
+		return
+	}
+	var parent *File
+	if parentID != "" {
+		pf, found := proj.byID[parentID]
+		if !found || !pf.IsFolder {
+			// Unknown/non-folder id (e.g. a name-built path) → 404, like real OSF.
+			s.mu.Unlock()
+			http.NotFound(w, r)
+			return
 		}
-		proj.byID[f.ID] = f
-		proj.byPath[fullPath] = f
-		s.allFiles[f.ID] = f
-		if parentPath == "/" {
-			proj.root = append(proj.root, f)
-		}
+		parent = pf
+	}
+	fullPath := "/" + name
+	if parent != nil {
+		fullPath = parent.FilePath + "/" + name
+	}
+	s.nextID++
+	f := &File{
+		ID:       fmt.Sprintf("f%d", s.nextID),
+		Name:     name,
+		FilePath: fullPath,
+		Versions: []fileVer{{num: 1, content: content, md5: md5Str}},
+	}
+	proj.byID[f.ID] = f
+	proj.byPath[fullPath] = f
+	s.allFiles[f.ID] = f
+	if parent == nil {
+		proj.root = append(proj.root, f)
+	} else {
+		parent.Children = append(parent.Children, f)
 	}
 	s.uploads = append(s.uploads, UploadRecord{NodeID: nodeID, Path: fullPath, Content: content})
 	s.mu.Unlock()

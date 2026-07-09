@@ -1,1 +1,3 @@
 /gosf
+.env
+coverage/

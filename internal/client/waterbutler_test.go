@@ -10,41 +10,46 @@ import (
 	"testing"
 )
 
-func TestBuildUploadURL(t *testing.T) {
+func TestRootUploadURL(t *testing.T) {
+	got := RootUploadURL("abc12")
+	want := "https://files.osf.io/v1/resources/abc12/providers/osfstorage/"
+	if got != want {
+		t.Errorf("RootUploadURL(abc12) = %q, want %q", got, want)
+	}
+}
+
+func TestAppendUploadName(t *testing.T) {
 	cases := []struct {
-		nodeID     string
-		parentPath string
-		filename   string
-		want       string
+		name     string
+		base     string
+		filename string
+		want     string
 	}{
 		{
-			"abc12", "/", "file.csv",
-			"https://files.osf.io/v1/resources/abc12/providers/osfstorage/?name=file.csv&kind=file",
+			"root base",
+			"https://files.osf.io/v1/resources/abc12/providers/osfstorage/",
+			"file.csv",
+			"https://files.osf.io/v1/resources/abc12/providers/osfstorage/?kind=file&name=file.csv",
 		},
 		{
-			"abc12", "", "file.csv",
-			"https://files.osf.io/v1/resources/abc12/providers/osfstorage/?name=file.csv&kind=file",
+			"id-based folder link (osfstorage addresses folders by ID, not name)",
+			"https://files.osf.io/v1/resources/abc12/providers/osfstorage/5fd0e/",
+			"result.csv",
+			"https://files.osf.io/v1/resources/abc12/providers/osfstorage/5fd0e/?kind=file&name=result.csv",
 		},
 		{
-			"abc12", "/data", "result.csv",
-			"https://files.osf.io/v1/resources/abc12/providers/osfstorage/data/?name=result.csv&kind=file",
-		},
-		{
-			"abc12", "/data/results", "out.csv",
-			"https://files.osf.io/v1/resources/abc12/providers/osfstorage/data/results/?name=out.csv&kind=file",
-		},
-		{
-			"abc12", "/path with spaces", "my file.csv",
-			"https://files.osf.io/v1/resources/abc12/providers/osfstorage/path%20with%20spaces/?name=my+file.csv&kind=file",
+			"name with spaces is query-escaped",
+			"https://files.osf.io/v1/resources/abc12/providers/osfstorage/5fd0e/",
+			"my file.csv",
+			"https://files.osf.io/v1/resources/abc12/providers/osfstorage/5fd0e/?kind=file&name=my+file.csv",
 		},
 	}
-
 	for _, tc := range cases {
-		got := BuildUploadURL(tc.nodeID, tc.parentPath, tc.filename)
-		if got != tc.want {
-			t.Errorf("BuildUploadURL(%q, %q, %q)\n  got  %s\n  want %s",
-				tc.nodeID, tc.parentPath, tc.filename, got, tc.want)
-		}
+		t.Run(tc.name, func(t *testing.T) {
+			if got := AppendUploadName(tc.base, tc.filename); got != tc.want {
+				t.Errorf("AppendUploadName(%q, %q)\n  got  %s\n  want %s", tc.base, tc.filename, got, tc.want)
+			}
+		})
 	}
 }
 

@@ -52,7 +52,7 @@ func fileVersionsToRemote(versions []client.FileVersion) []manifest.RemoteVersio
 	out := make([]manifest.RemoteVersion, len(versions))
 	for i, v := range versions {
 		out[i] = manifest.RemoteVersion{
-			Version: v.Attributes.Version,
+			Version: v.Number(),
 			MD5:     v.Attributes.Extra.Hashes.MD5,
 		}
 	}

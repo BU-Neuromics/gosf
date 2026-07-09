@@ -45,12 +45,26 @@ func buildBinary() (string, error) {
 	}
 
 	bin := filepath.Join(tmp, "gosf")
-	cmd := exec.Command("go", "build", "-o", bin, ".")
+	buildArgs := []string{"build", "-o", bin, "."}
+	if os.Getenv("GOSF_COVERDIR") != "" {
+		// Instrument the binary so subprocess runs emit coverage into GOCOVERDIR.
+		buildArgs = []string{"build", "-cover", "-o", bin, "."}
+	}
+	cmd := exec.Command("go", buildArgs...)
 	cmd.Dir = repoRoot
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return "", fmt.Errorf("build failed: %s", out)
 	}
 	return bin, nil
+}
+
+// coverEnv returns a GOCOVERDIR entry for the subprocess when GOSF_COVERDIR is
+// set, so an instrumented binary writes its coverage there; empty otherwise.
+func coverEnv() []string {
+	if dir := os.Getenv("GOSF_COVERDIR"); dir != "" {
+		return []string{"GOCOVERDIR=" + dir}
+	}
+	return nil
 }
 
 // testEnv wraps a temp working directory and fake server for one test.
@@ -83,6 +97,38 @@ func (e *testEnv) run(args ...string) (stdout, stderr string, code int) {
 		"HOME="+e.dir,
 		"XDG_CONFIG_HOME="+filepath.Join(e.dir, ".config"),
 	)
+	cmd.Env = append(cmd.Env, coverEnv()...)
+	var outBuf, errBuf bytes.Buffer
+	cmd.Stdout = &outBuf
+	cmd.Stderr = &errBuf
+	if err := cmd.Run(); err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			code = exitErr.ExitCode()
+		} else {
+			code = 1
+		}
+	}
+	return outBuf.String(), errBuf.String(), code
+}
+
+// runClean runs gosf like run() but with NO forced OSF_TOKEN (it is cleared) and
+// optional stdin, so auth tests fully control the token source. Storage stays
+// isolated in the test's temp HOME/XDG dir.
+func (e *testEnv) runClean(stdin string, args ...string) (stdout, stderr string, code int) {
+	e.t.Helper()
+	cmd := exec.Command(binaryPath, args...)
+	cmd.Dir = e.dir
+	cmd.Env = append(os.Environ(),
+		"GOSF_API_BASE="+e.srv.URL()+"/v2",
+		"GOSF_FILES_BASE="+e.srv.URL(),
+		"HOME="+e.dir,
+		"XDG_CONFIG_HOME="+filepath.Join(e.dir, ".config"),
+		"OSF_TOKEN=", // clear any inherited token; auth tests set their own source
+	)
+	cmd.Env = append(cmd.Env, coverEnv()...)
+	if stdin != "" {
+		cmd.Stdin = strings.NewReader(stdin)
+	}
 	var outBuf, errBuf bytes.Buffer
 	cmd.Stdout = &outBuf
 	cmd.Stderr = &errBuf
@@ -344,6 +390,26 @@ func TestPush_NewFile(t *testing.T) {
 	}
 }
 
+// TestPush_NewFileIntoSubfolder guards the fix for the subfolder-upload 404:
+// uploading a new file into an existing subfolder must target the folder's
+// ID-based Waterbutler upload link, not a name-built path (which real OSF 404s).
+func TestPush_NewFileIntoSubfolder(t *testing.T) {
+	env := newTestEnv(t)
+	env.srv.AddProject("abc12", "Test Project")
+	env.srv.AddFolder("abc12", "/sub") // folder exists, has an opaque ID
+	env.writeFile("x.csv", "hello\n")
+
+	_, stderr, code := env.run("push", "x.csv", "abc12:/sub/x.csv", "--quiet")
+	if code != 0 {
+		t.Fatalf("push into subfolder failed: exit %d; stderr=%s", code, stderr)
+	}
+	// The uploaded file must be listed under /sub.
+	out, _, _ := env.run("ls", "abc12:/sub", "--output=json")
+	if !strings.Contains(out, "x.csv") {
+		t.Errorf("pushed file not listed under /sub:\n%s", out)
+	}
+}
+
 func TestPush_ConflictSkip(t *testing.T) {
 	env := newTestEnv(t)
 	env.srv.AddProject("abc12", "Test Project")
@@ -473,6 +539,7 @@ md5 = ""
 func TestPush_BarePushFollowsManifest(t *testing.T) {
 	env := newTestEnv(t)
 	env.srv.AddProject("abc12", "Test Project")
+	env.srv.AddFolder("abc12", "/data") // destination folder must exist to upload into it
 	env.writeFile("data/report.csv", "report data")
 	env.writeFile(".gosf/gosf.toml", `[project]
 id = "abc12"
@@ -1417,6 +1484,7 @@ func TestOpen_JSON_File(t *testing.T) {
 func TestMkdir_Basic(t *testing.T) {
 	env := newTestEnv(t)
 	env.srv.AddProject("abc12", "Test Project")
+	env.srv.AddFolder("abc12", "/results") // parent must exist to create a subfolder
 
 	_, stderr, code := env.run("mkdir", "abc12:/results/2026")
 	if code != 0 {
@@ -1431,9 +1499,24 @@ func TestMkdir_Basic(t *testing.T) {
 	}
 }
 
+func TestMkdir_RootLevel(t *testing.T) {
+	env := newTestEnv(t)
+	env.srv.AddProject("abc12", "Test Project")
+
+	_, stderr, code := env.run("mkdir", "abc12:/toplevel")
+	if code != 0 {
+		t.Fatalf("root-level mkdir exit %d; stderr=%s", code, stderr)
+	}
+	flds := env.srv.Folders()
+	if len(flds) == 0 || flds[0] != "/toplevel" {
+		t.Errorf("folders = %v, want [/toplevel]", flds)
+	}
+}
+
 func TestMkdir_JSON(t *testing.T) {
 	env := newTestEnv(t)
 	env.srv.AddProject("abc12", "Test Project")
+	env.srv.AddFolder("abc12", "/data") // parent must exist to create a subfolder
 
 	stdout, _, code := env.run("mkdir", "abc12:/data/raw", "--output=json")
 	if code != 0 {
@@ -1873,6 +1956,89 @@ md5       = ""
 	}
 }
 
+// ---- Auth ----
+
+func TestAuth_StatusUnauthenticated(t *testing.T) {
+	env := newTestEnv(t)
+	stdout, _, code := env.runClean("", "auth", "status")
+	if code != 0 {
+		t.Fatalf("auth status (unauth) exit %d", code)
+	}
+	if !strings.Contains(stdout, "Not logged in") {
+		t.Errorf("expected 'Not logged in', got %q", stdout)
+	}
+}
+
+func TestAuth_StatusFromEnvToken(t *testing.T) {
+	env := newTestEnv(t)
+	// run() sets OSF_TOKEN=test-token; the fake accepts any bearer by default.
+	stdout, stderr, code := env.run("auth", "status")
+	if code != 0 {
+		t.Fatalf("auth status exit %d; stderr=%s", code, stderr)
+	}
+	if !strings.Contains(stdout, "Logged in as: Test User") {
+		t.Errorf("expected logged-in identity, got %q", stdout)
+	}
+	if !strings.Contains(stdout, "OSF_TOKEN environment variable") {
+		t.Errorf("expected token source to be the env var, got %q", stdout)
+	}
+}
+
+func TestAuth_LoginStatusLogout(t *testing.T) {
+	env := newTestEnv(t)
+
+	// login: pipe the token on stdin, store to the token file (no keychain).
+	out, stderr, code := env.runClean("secret-token\n", "auth", "login", "--no-keychain")
+	if code != 0 {
+		t.Fatalf("auth login exit %d; stderr=%s", code, stderr)
+	}
+	if !strings.Contains(out, "Logged in as Test User") {
+		t.Errorf("expected login confirmation, got %q", out)
+	}
+
+	// status: now reads the token file.
+	out, _, code = env.runClean("", "auth", "status")
+	if code != 0 || !strings.Contains(out, "Logged in as: Test User") {
+		t.Fatalf("auth status after login: exit %d, out=%q", code, out)
+	}
+	if !strings.Contains(out, "token file") {
+		t.Errorf("expected token source 'token file', got %q", out)
+	}
+
+	// logout: removes the stored token.
+	out, stderr, code = env.runClean("", "auth", "logout")
+	if code != 0 {
+		t.Fatalf("auth logout exit %d; stderr=%s", code, stderr)
+	}
+	if !strings.Contains(out, "Logged out") {
+		t.Errorf("expected 'Logged out', got %q", out)
+	}
+
+	// status: back to unauthenticated.
+	out, _, _ = env.runClean("", "auth", "status")
+	if !strings.Contains(out, "Not logged in") {
+		t.Errorf("expected 'Not logged in' after logout, got %q", out)
+	}
+}
+
+func TestAuth_LoginInvalidToken(t *testing.T) {
+	env := newTestEnv(t)
+	env.srv.SetValidToken("good-token") // anything else 401s
+
+	_, stderr, code := env.runClean("wrong-token\n", "auth", "login", "--no-keychain")
+	if code == 0 {
+		t.Fatalf("auth login with a bad token should fail; stderr=%s", stderr)
+	}
+	if !strings.Contains(stderr, "invalid token") {
+		t.Errorf("expected 'invalid token' error, got %q", stderr)
+	}
+	// A failed login must not leave a stored token behind.
+	out, _, _ := env.runClean("", "auth", "status")
+	if !strings.Contains(out, "Not logged in") {
+		t.Errorf("failed login should store nothing, got %q", out)
+	}
+}
+
 // ---- Color control ----
 
 // TestColor_FlagControlsANSI verifies the --color flag forces ANSI on/off, and
@@ -1923,5 +2089,139 @@ func TestColor_JSONNeverColored(t *testing.T) {
 	var items []map[string]any
 	if err := json.Unmarshal([]byte(out), &items); err != nil {
 		t.Fatalf("json not parseable: %v\n%s", err, out)
+	}
+}
+
+// ---- Error paths ----
+
+func TestLs_NotFoundProject(t *testing.T) {
+	env := newTestEnv(t)
+	_, stderr, code := env.run("ls", "nope1")
+	if code == 0 {
+		t.Fatal("ls of a nonexistent project should fail")
+	}
+	if !strings.Contains(stderr, "404") {
+		t.Errorf("expected a 404 error, got %q", stderr)
+	}
+}
+
+func TestLs_ForbiddenProject_FriendlyAuthError(t *testing.T) {
+	env := newTestEnv(t)
+	env.srv.AddProject("priv01", "Private")
+	env.srv.SetForbidden("priv01")
+
+	_, stderr, code := env.run("ls", "priv01")
+	if code == 0 {
+		t.Fatal("ls of a forbidden project should fail")
+	}
+	if !strings.Contains(stderr, "gosf auth login") || !strings.Contains(stderr, "403") {
+		t.Errorf("expected a friendly 403 auth hint, got %q", stderr)
+	}
+}
+
+func TestPull_ForbiddenProject_FriendlyAuthError(t *testing.T) {
+	env := newTestEnv(t)
+	env.srv.AddProject("priv02", "Private")
+	env.srv.SetForbidden("priv02")
+
+	_, stderr, code := env.run("pull", "priv02:/x.csv", "--no-track")
+	if code == 0 || !strings.Contains(stderr, "gosf auth login") {
+		t.Errorf("expected a friendly 403 auth hint on pull; code=%d stderr=%q", code, stderr)
+	}
+}
+
+func TestPull_PathNotFound(t *testing.T) {
+	env := newTestEnv(t)
+	env.srv.AddProject("abc12", "Test")
+	_, stderr, code := env.run("pull", "abc12:/missing.csv", "--no-track")
+	if code == 0 || !strings.Contains(stderr, "not found") {
+		t.Errorf("expected 'not found'; code=%d stderr=%q", code, stderr)
+	}
+}
+
+func TestPull_VersionOnDirectory(t *testing.T) {
+	env := newTestEnv(t)
+	env.srv.AddProject("abc12", "Test")
+	env.srv.AddFile("abc12", "/data/a.csv", []byte("a"))
+	env.srv.AddFile("abc12", "/data/b.csv", []byte("b"))
+
+	_, stderr, code := env.run("pull", "abc12:/data", "out/", "--version=1", "--no-track")
+	if code == 0 || !strings.Contains(stderr, "single file") {
+		t.Errorf("expected --version single-file error; code=%d stderr=%q", code, stderr)
+	}
+}
+
+func TestPull_VersionNotFound(t *testing.T) {
+	env := newTestEnv(t)
+	env.srv.AddProject("abc12", "Test")
+	env.srv.AddFile("abc12", "/data.csv", []byte("v1"))
+
+	_, stderr, code := env.run("pull", "abc12:/data.csv", "--version=99", "--no-track")
+	if code == 0 || !strings.Contains(stderr, "99") {
+		t.Errorf("expected version-99-not-found error; code=%d stderr=%q", code, stderr)
+	}
+}
+
+func TestPush_ParentFolderMissing(t *testing.T) {
+	env := newTestEnv(t)
+	env.srv.AddProject("abc12", "Test")
+	env.writeFile("x.csv", "data")
+
+	_, stderr, code := env.run("push", "x.csv", "abc12:/nope/x.csv", "--no-track", "--quiet")
+	if code == 0 || !strings.Contains(stderr, "not accessible") {
+		t.Errorf("expected 'not accessible' for a missing parent folder; code=%d stderr=%q", code, stderr)
+	}
+}
+
+func TestPush_ConflictRename(t *testing.T) {
+	env := newTestEnv(t)
+	env.srv.AddProject("abc12", "Test")
+	env.srv.AddFile("abc12", "/data.csv", []byte("existing"))
+	env.writeFile("data.csv", "new content")
+
+	_, stderr, code := env.run("push", "data.csv", "abc12:/data.csv", "--conflict=rename", "--no-track", "--quiet")
+	if code != 0 {
+		t.Fatalf("rename push exit %d; stderr=%s", code, stderr)
+	}
+	out, _, _ := env.run("ls", "abc12", "--output=json")
+	if !strings.Contains(out, "data_1.csv") {
+		t.Errorf("expected a renamed data_1.csv to be created:\n%s", out)
+	}
+}
+
+func TestPush_ConflictInvalid(t *testing.T) {
+	env := newTestEnv(t)
+	env.srv.AddProject("abc12", "Test")
+	env.writeFile("x.csv", "data")
+	_, stderr, code := env.run("push", "x.csv", "abc12:/x.csv", "--conflict=bogus", "--quiet")
+	if code == 0 || !strings.Contains(stderr, "conflict") {
+		t.Errorf("expected a --conflict validation error; code=%d stderr=%q", code, stderr)
+	}
+}
+
+func TestRm_NotFound(t *testing.T) {
+	env := newTestEnv(t)
+	env.srv.AddProject("abc12", "Test")
+	_, stderr, code := env.run("rm", "abc12:/missing.csv", "--yes", "--quiet")
+	if code == 0 || !strings.Contains(stderr, "not found") {
+		t.Errorf("expected 'not found' on rm of a missing path; code=%d stderr=%q", code, stderr)
+	}
+}
+
+func TestStatus_MalformedManifest(t *testing.T) {
+	env := newTestEnv(t)
+	env.srv.AddProject("abc12", "Test")
+	// Entry missing the required `direction` field → load must fail.
+	env.writeFile(".gosf/gosf.toml", `[project]
+id = "abc12"
+
+[[files]]
+local  = "x.csv"
+remote = "/x.csv"
+version = 0
+`)
+	_, stderr, code := env.run("status")
+	if code == 0 || !strings.Contains(stderr, "direction") {
+		t.Errorf("expected a manifest validation error mentioning direction; code=%d stderr=%q", code, stderr)
 	}
 }

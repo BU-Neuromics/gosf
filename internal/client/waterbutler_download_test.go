@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestDownload_Success(t *testing.T) {
@@ -76,5 +77,45 @@ func TestDownload_ErrorStatusNoFile(t *testing.T) {
 	}
 	if _, statErr := os.Stat(dest); !os.IsNotExist(statErr) {
 		t.Error("no file should be created on an error status")
+	}
+}
+
+// TestDownload_ContextCancel verifies that cancelling the context mid-stream
+// (e.g. Ctrl-C) aborts the download and removes the partial file — the behavior
+// root.go relies on via signal.NotifyContext.
+func TestDownload_ContextCancel(t *testing.T) {
+	started := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", "1000000")
+		w.WriteHeader(http.StatusOK)
+		if f, ok := w.(http.Flusher); ok {
+			_, _ = w.Write([]byte("partial"))
+			f.Flush()
+		}
+		close(started)
+		<-r.Context().Done() // block until the client cancels
+	}))
+	defer srv.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	dest := filepath.Join(t.TempDir(), "out.bin")
+	errc := make(chan error, 1)
+	go func() {
+		errc <- NewWaterbutler("tok").Download(ctx, srv.URL, dest, 1000000, true)
+	}()
+
+	<-started
+	cancel()
+
+	select {
+	case err := <-errc:
+		if err == nil {
+			t.Fatal("expected an error when the context is cancelled")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Download did not return after context cancel")
+	}
+	if _, statErr := os.Stat(dest); !os.IsNotExist(statErr) {
+		t.Errorf("partial file should be removed after a cancelled download, stat err = %v", statErr)
 	}
 }

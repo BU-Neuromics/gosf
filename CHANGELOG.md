@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.0] - 2026-07-09
+
+### Added
+
+- Colorized output and progress spinners (#42). Status glyphs, headers, errors, and the PUBLIC push warning are now colored; indeterminate waits (resolve/list/versions) show a spinner. A global `--color=auto|always|never` flag controls it; color is off automatically under `--output=json`, `--quiet`, `NO_COLOR`, and when stdout is not a TTY.
+
+### Fixed
+
+- **Pushing a new file into a non-root subfolder returned `404 Not Found`** (#45). OSF's osfstorage addresses folders by opaque object ID, not by name; gosf built upload URLs from folder names. New-file uploads now use the parent folder's ID-based upload link (root uploads were unaffected).
+- **`gosf mkdir` into a subfolder had the same `404`** (#46), fixed the same way.
+- **`gosf versions` reported version `0` for every version, and manifest status version comparisons (`REMOTE_NEWER`/`BEHIND`) were skewed** (#49). The OSF versions endpoint carries the version number as the JSON:API resource `id`, not an attribute; gosf now reads it correctly.
+- **`gosf auth logout` failed on a locked or unavailable OS keychain** (headless/HPC) even though the token lived in a file (#48). Logout is now best-effort on the keychain: it always removes the token file, warns on a keychain error, and only fails on a real file-removal error.
+
+### Internal
+
+- New live-OSF integration test tier (`-tags live`) exercising a real private project, a `dev` integration branch with live CI, merged unit+integration coverage measurement (`make cover`), and broadened error-path test coverage (#43, #44, #47, #48, #50).
+
 ## [1.4.0] - 2026-07-08
 
 ### Added
