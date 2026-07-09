@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.6.0] - 2026-07-09
+
+### Added
+
+- **`gosf onboard`** (#57) — an interactive, resumable setup wizard. It detects your current state and starts at the right step: authenticate, attach an OSF project (type a GUID or pick from your projects), and choose local files to push via a collapsible file-tree checkbox UI (defaulting to the files git doesn't track). It records `direction=push` entries in `.gosf/gosf.toml` and stops; run `gosf sync` to upload. Requires an interactive terminal.
+- **New-release notifications** (#56) — gosf now tells you when a newer release is available. The check is cached (hits the GitHub releases API at most once a day), best-effort, and suppressed under `--quiet`, `--output=json`, non-interactive use, and when `GOSF_NO_UPDATE_CHECK` is set.
+
+### Fixed
+
+- `gosf status` / `gosf sync` in a directory without a manifest now give an actionable error pointing at `gosf init` (rather than only `gosf add`) (#55).
+
+### Documentation
+
+- README and the `skills/gosf/SKILL.md` agent skill were refreshed to match current behavior: the manifest lives at `.gosf/gosf.toml`, the state-based sync model (`PIN_ONLY`/`DIVERGED`, `--resolve`, `--force`), the `--color` flag, and the `init`/`mkdir`/`mv`/`cp`/`set`/`onboard` commands; the README now leads with the coding-agents section (#53).
+
 ## [1.5.0] - 2026-07-09
 
 ### Added
