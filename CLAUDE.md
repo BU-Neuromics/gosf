@@ -561,8 +561,8 @@ any non-root subfolder — the bug the live tier caught). Instead:
 For *overwriting* an existing file, PUT directly to the file's `FileLinks.Upload`
 (the correct versioned, ID-based URL from the metadata API).
 
-> Note: `mkdir` into a subfolder still builds a name-based folder URL and has the
-> same ID bug — a scoped follow-up.
+`mkdir` uses the same ID-based approach: `folderUploadBase` for the parent, then
+`client.AppendFolderName(base, name)` (kind=folder), PUT via `CreateFolder`.
 
 **Redirect handling**: Waterbutler redirects downloads to S3 (or other backend).
 Strip the `Authorization` header when following redirects to a different host.

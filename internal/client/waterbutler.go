@@ -241,13 +241,24 @@ func RootUploadURL(nodeID string) string {
 // upload base URL. uploadBase is either RootUploadURL(node) or a folder's
 // links.upload (already ID-based). Existing query params are preserved.
 func AppendUploadName(uploadBase, filename string) string {
-	u, err := url.Parse(uploadBase)
+	return appendNameKind(uploadBase, filename, "file")
+}
+
+// AppendFolderName is AppendUploadName's folder counterpart: it sets the
+// name/kind params to create a new folder under the given base (RootUploadURL or
+// a parent folder's ID-based links.upload).
+func AppendFolderName(uploadBase, name string) string {
+	return appendNameKind(uploadBase, name, "folder")
+}
+
+func appendNameKind(base, name, kind string) string {
+	u, err := url.Parse(base)
 	if err != nil {
-		return uploadBase + "?name=" + url.QueryEscape(filename) + "&kind=file"
+		return base + "?name=" + url.QueryEscape(name) + "&kind=" + kind
 	}
 	q := u.Query()
-	q.Set("name", filename)
-	q.Set("kind", "file")
+	q.Set("name", name)
+	q.Set("kind", kind)
 	u.RawQuery = q.Encode()
 	return u.String()
 }
@@ -306,10 +317,11 @@ func (c *WaterbutlerClient) Copy(ctx context.Context, moveURL, destNodeID, destF
 	return c.postAction(ctx, moveURL, body)
 }
 
-// CreateFolder creates a new folder inside parentPath within a node's OSF Storage.
-func (c *WaterbutlerClient) CreateFolder(ctx context.Context, nodeID, parentPath, name string) error {
-	u := BuildFolderURL(nodeID, parentPath, name)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPut, u, http.NoBody)
+// CreateFolder creates a new folder by PUTting to a Waterbutler create-folder
+// URL (build it with AppendFolderName over RootUploadURL or a parent folder's
+// ID-based links.upload).
+func (c *WaterbutlerClient) CreateFolder(ctx context.Context, createURL string) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, createURL, http.NoBody)
 	if err != nil {
 		return err
 	}
@@ -352,25 +364,6 @@ func (c *WaterbutlerClient) postAction(ctx context.Context, actionURL string, bo
 		return parseAPIError(resp.StatusCode, respBody)
 	}
 	return nil
-}
-
-// BuildFolderURL constructs the Waterbutler URL for creating a new folder.
-func BuildFolderURL(nodeID, parentPath, name string) string {
-	filesBase := os.Getenv("GOSF_FILES_BASE")
-	if filesBase == "" {
-		filesBase = wbBase
-	}
-	base := filesBase + "/v1/resources/" + nodeID + "/providers/osfstorage/"
-	p := strings.Trim(parentPath, "/")
-	if p != "" {
-		parts := strings.Split(p, "/")
-		encoded := make([]string, len(parts))
-		for i, seg := range parts {
-			encoded[i] = url.PathEscape(seg)
-		}
-		base += strings.Join(encoded, "/") + "/"
-	}
-	return base + "?name=" + url.QueryEscape(name) + "&kind=folder"
 }
 
 func truncateName(s string, max int) string {

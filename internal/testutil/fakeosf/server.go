@@ -568,20 +568,27 @@ func (s *Server) handleNewUpload(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if kind == "folder" {
-		// NOTE: folder creation is still resolved by NAME path here. mkdir into a
-		// subfolder has the same opaque-ID bug as file upload once had, but the fix
-		// is scoped to file uploads for now; keeping the fake name-lenient for
-		// folders leaves mkdir behavior (and its tests) unchanged. Tracked as a
-		// follow-up.
+		// Like file upload, the destination is addressed by the parent folder's
+		// opaque ID (empty = root); a name/unknown segment 404s, as real OSF does.
+		s.mu.Lock()
+		proj, ok := s.projects[nodeID]
+		if !ok {
+			s.mu.Unlock()
+			http.NotFound(w, r)
+			return
+		}
 		parentPath := "/"
 		if parentID != "" {
-			parentPath = "/" + parentID
+			pf, found := proj.byID[parentID]
+			if !found || !pf.IsFolder {
+				s.mu.Unlock()
+				http.NotFound(w, r)
+				return
+			}
+			parentPath = pf.FilePath
 		}
 		fullPath := strings.TrimRight(parentPath, "/") + "/" + name
-		s.mu.Lock()
-		if proj, ok := s.projects[nodeID]; ok {
-			s.ensureFolderLocked(proj, fullPath)
-		}
+		s.ensureFolderLocked(proj, fullPath)
 		s.folders = append(s.folders, fullPath)
 		s.mu.Unlock()
 		writeJSON(w, http.StatusCreated, map[string]any{

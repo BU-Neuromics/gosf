@@ -104,8 +104,9 @@ func TestWaterbutler_Copy(t *testing.T) {
 }
 
 func TestWaterbutler_CreateFolder(t *testing.T) {
-	var gotPath string
+	var gotMethod, gotPath string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod = r.Method
 		gotPath = r.URL.Path + "?" + r.URL.RawQuery
 		w.WriteHeader(http.StatusCreated)
 	}))
@@ -113,18 +114,21 @@ func TestWaterbutler_CreateFolder(t *testing.T) {
 
 	t.Setenv("GOSF_FILES_BASE", srv.URL)
 	wb := client.NewWaterbutler("tok")
-	err := wb.CreateFolder(context.Background(), "abc12", "/data", "results")
+	// Subfolder create URL, derived from a parent folder's ID-based upload link.
+	base := srv.URL + "/v1/resources/abc12/providers/osfstorage/d5/"
+	err := wb.CreateFolder(context.Background(), client.AppendFolderName(base, "results"))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !strings.Contains(gotPath, "kind=folder") {
-		t.Errorf("expected kind=folder in URL, got %q", gotPath)
+	if gotMethod != http.MethodPut {
+		t.Errorf("method = %q, want PUT", gotMethod)
 	}
-	if !strings.Contains(gotPath, "name=results") {
-		t.Errorf("expected name=results in URL, got %q", gotPath)
+	if !strings.Contains(gotPath, "kind=folder") || !strings.Contains(gotPath, "name=results") {
+		t.Errorf("expected kind=folder&name=results, got %q", gotPath)
 	}
-	if !strings.Contains(gotPath, "/data/") {
-		t.Errorf("expected /data/ in URL path, got %q", gotPath)
+	// Addresses the parent by its opaque ID, not a name.
+	if !strings.Contains(gotPath, "/osfstorage/d5/") {
+		t.Errorf("expected ID-based folder path /osfstorage/d5/, got %q", gotPath)
 	}
 }
 
@@ -138,7 +142,7 @@ func TestWaterbutler_CreateFolder_Root(t *testing.T) {
 
 	t.Setenv("GOSF_FILES_BASE", srv.URL)
 	wb := client.NewWaterbutler("tok")
-	err := wb.CreateFolder(context.Background(), "abc12", "/", "toplevel")
+	err := wb.CreateFolder(context.Background(), client.AppendFolderName(client.RootUploadURL("abc12"), "toplevel"))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
