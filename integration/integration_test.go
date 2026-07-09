@@ -2236,3 +2236,21 @@ func TestStatus_NoManifest_SuggestsInit(t *testing.T) {
 		t.Errorf("missing-manifest error should suggest 'gosf init', got %q", stderr)
 	}
 }
+
+// ---- Onboard (guard paths only; the interactive TUI needs a real TTY) ----
+
+func TestOnboard_RequiresTTY(t *testing.T) {
+	env := newTestEnv(t)
+	_, stderr, code := env.run("onboard") // harness stdin is not a TTY
+	if code == 0 || !strings.Contains(stderr, "interactive") {
+		t.Errorf("onboard should require an interactive terminal; code=%d stderr=%q", code, stderr)
+	}
+}
+
+func TestOnboard_JSONRefused(t *testing.T) {
+	env := newTestEnv(t)
+	_, stderr, code := env.run("onboard", "--output=json")
+	if code == 0 || !strings.Contains(stderr, "json") {
+		t.Errorf("onboard --output=json should be refused; code=%d stderr=%q", code, stderr)
+	}
+}

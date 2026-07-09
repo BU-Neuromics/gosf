@@ -86,6 +86,7 @@ gosf/
 │   ├── add.go               # gosf add — add entry to .gosf/gosf.toml
 │   ├── status.go            # gosf status — show manifest sync status
 │   ├── sync.go              # gosf sync — push/pull; processPushEntry/processPullEntry gates
+│   ├── onboard.go           # gosf onboard — guided setup (auth → project → pick files)
 │   ├── gate.go              # state-based safety: divergenceError, entryPlan, push-plan helpers
 │   ├── prompt.go            # printPushPlan, confirmation/TTY helpers
 │   ├── auth_helpers.go      # friendlyAuthError (401/403 → auth hint)
@@ -103,6 +104,11 @@ gosf/
 │   │   └── config.go       # config file + keychain + env
 │   ├── update/
 │   │   └── update.go       # cached "new release available" check
+│   ├── gitutil/
+│   │   └── candidates.go   # local push candidates (git-untracked; fs-walk fallback)
+│   ├── picker/
+│   │   ├── tree.go         # pure file-tree model (check/partial, collapse, flatten)
+│   │   └── picker.go       # bubbletea view over the tree (onboard file selection)
 │   └── output/
 │       ├── format.go       # human-readable vs --output=json
 │       ├── style.go        # color init + Green/Red/Yellow/Cyan/Bold/Dim helpers
@@ -382,6 +388,24 @@ token is a valid client) and only need a token for private data. A raw 401/403 o
 a read is wrapped by `friendlyAuthError` (`cmd/auth_helpers.go`) into an
 actionable "run 'gosf auth login' or set OSF_TOKEN" message. `push`/`sync`/
 `projects` still require a token up front.
+
+### `gosf onboard` (`cmd/onboard.go`)
+
+Interactive, resumable guided setup (TTY-only; errors under `--output=json` or a
+non-TTY). Detects state and enters at the first unsatisfied phase: **auth**
+(offered, not required — `runLogin`, shared with `gosf auth login`) → **project**
+(attach a GUID: `--project`, a numbered pick from `client.GetUserNodes`, or typed)
+→ **select** (candidates from `internal/gitutil.Candidates`, the bubbletea tree
+picker in `internal/picker`, remote base via `--remote-base`/prompt) → writes
+`direction=push` entries and **stops**, pointing at `gosf sync`. Pure helpers
+(`untrackedCandidates`, `remotePath`) and the tree model are unit-tested; the
+guard paths (non-TTY / `--output=json`) are integration-tested; and the full
+interactive flow is driven end-to-end over a **pseudo-terminal** in
+`integration/onboard_pty_test.go` (`creack/pty`). Because lipgloss/bubbletea
+query the terminal (OSC 11 background, CPR, DA1) and a bare PTY isn't an emulator,
+the test's reader answers those queries; it skips if a PTY can't be allocated.
+New deps: `charmbracelet/bubbletea` + `lipgloss` + `creack/pty` (pinned to keep
+the go 1.24 toolchain).
 
 ### Exit code handling
 

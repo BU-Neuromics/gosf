@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"strings"
@@ -33,34 +34,40 @@ The token is stored in the OS keychain by default.
 On headless/HPC systems, use --no-keychain to write to a token file instead.`,
 	SilenceUsage: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		token, err := readToken()
-		if err != nil {
-			return err
-		}
-		if token == "" {
-			return fmt.Errorf("no token provided")
-		}
-
-		// Validate by calling the API.
-		if !flagQuiet {
-			fmt.Fprintln(os.Stderr, "Validating token…")
-		}
-		c := client.New(token)
-		user, err := c.GetCurrentUser(cmd.Context())
-		if err != nil {
-			if apiErr, ok := err.(*client.APIError); ok && apiErr.StatusCode == 401 {
-				return fmt.Errorf("invalid token: authentication failed")
-			}
-			return fmt.Errorf("validating token: %w", err)
-		}
-
-		if err := config.SaveToken(token, noKeychain); err != nil {
-			return fmt.Errorf("saving token: %w", err)
-		}
-
-		fmt.Fprintf(os.Stdout, "Logged in as %s (%s)\n", user.Attributes.FullName, user.ID)
-		return nil
+		return runLogin(cmd.Context(), noKeychain)
 	},
+}
+
+// runLogin reads a token (interactively or from stdin), validates it against the
+// API, and stores it. Shared by `gosf auth login` and `gosf onboard`.
+func runLogin(ctx context.Context, noKeychain bool) error {
+	token, err := readToken()
+	if err != nil {
+		return err
+	}
+	if token == "" {
+		return fmt.Errorf("no token provided")
+	}
+
+	// Validate by calling the API.
+	if !flagQuiet {
+		fmt.Fprintln(os.Stderr, "Validating token…")
+	}
+	c := client.New(token)
+	user, err := c.GetCurrentUser(ctx)
+	if err != nil {
+		if apiErr, ok := err.(*client.APIError); ok && apiErr.StatusCode == 401 {
+			return fmt.Errorf("invalid token: authentication failed")
+		}
+		return fmt.Errorf("validating token: %w", err)
+	}
+
+	if err := config.SaveToken(token, noKeychain); err != nil {
+		return fmt.Errorf("saving token: %w", err)
+	}
+
+	fmt.Fprintf(os.Stdout, "Logged in as %s (%s)\n", user.Attributes.FullName, user.ID)
+	return nil
 }
 
 func readToken() (string, error) {

@@ -106,11 +106,17 @@ against the remote instead of blindly reporting "never pushed".
 ### Manifest commands
 
 ```bash
+gosf onboard [--project <guid>] [--remote-base <path>]  # interactive guided setup (TTY only)
 gosf init <project-id>                              # create/update .gosf/gosf.toml
 gosf add <local-path> [<project>:]<remote-path>     # stage file(s) for push (dir = recursive)
 gosf status [--no-check-remote] [--output=json]     # show sync state of all entries
 gosf sync [--force] [--resolve=ours|theirs] [--dry-run] [--no-check-remote] [--output=json]
 ```
+
+`gosf onboard` is a resumable, interactive wizard (auth → attach a project → pick
+git-untracked files to push via a tree checkbox UI). It writes `direction=push`
+entries and stops; run `gosf sync` to upload. TTY only — for scripting/agents,
+use `init` + `add` + `sync` directly.
 
 `gosf add` always stages for **push**; to record a file for pull, use `gosf pull`
 (it tracks what it downloads). If the remote path is omitted it mirrors the local
