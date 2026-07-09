@@ -21,13 +21,33 @@ $ gosf ls abc12:/data
 - **Token auth** stored securely in your OS keychain (with a plaintext fallback
   for headless systems).
 - **Scriptable** — `--output=json` on every command.
-- **Safe** — `--dry-run` on push/pull/rm, conflict handling on push, and
-  confirmation prompts before deletion.
-- **Progress bars** on transfers, suppressible with `--quiet`.
+- **Safe** — `--dry-run` on push/pull/rm, conflict handling on push, a rich
+  confirmation before bulk pushes, and state-based gates that refuse to silently
+  clobber diverged files.
+- **Idempotent** — pushing or pulling a file that already matches is a no-op; no
+  redundant versions, no needless downloads.
+- **Progress bars** on transfers and **colorized output** (both auto-off when not
+  a TTY or under `--quiet`/`--output=json`; controllable with `--color`).
 - **Ctrl-C aware** — cancels in-flight transfers cleanly and never leaves
   half-downloaded files behind.
-- **Sync manifest** — declare files in `gosf.toml` and keep them in sync with
-  `gosf sync`; CI-friendly status with `gosf status`.
+- **Sync manifest** — declare files in `.gosf/gosf.toml` and keep them in sync
+  with `gosf sync`; CI-friendly status with `gosf status`.
+
+## For coding agents
+
+`gosf` ships a [skills.sh](https://skills.sh) agent skill so AI coding agents can
+understand and invoke it without hand-written instructions.
+
+Install the skill in your project (supported by Claude Code, GitHub Copilot,
+Codex, and 38+ other agents):
+
+```console
+npx skills add BU-Neuromics/gosf
+```
+
+The skill covers installation, authentication, path syntax, the
+`.gosf/gosf.toml` manifest, every command, and common workflows. The source
+lives in [`skills/gosf/SKILL.md`](./skills/gosf/SKILL.md).
 
 ## Installation
 
@@ -146,7 +166,9 @@ The token is never printed in logs or error output.
 gosf auth logout
 ```
 
-Removes the token from the OS keychain and the token file.
+Removes the token file and (best-effort) the OS keychain entry. If the keychain
+is locked or unavailable, logout still succeeds and prints a warning — the token
+file, which gosf controls directly, is always removed.
 
 ## Path syntax
 
@@ -189,9 +211,16 @@ $ gosf pull abc12: --dry-run                   # preview a whole-project pull
 $ gosf pull abc12:/data/counts.h5 --version=2  # download a specific version
 ```
 
+A pull is **idempotent**: if the local file already matches the remote (same
+MD5), the download is skipped. With no path argument, `gosf pull` pulls the
+pull-eligible entries from `.gosf/gosf.toml`.
+
 Flags:
 - `--version=<n>` — download a specific historical version instead of the latest.
-  Only valid for single-file targets; ignored for directory pulls.
+  Only valid for single-file targets; errors for directory pulls.
+- `--force` — overwrite a locally-modified file with the tracked version.
+- `--resolve=theirs` — resolve a diverged file (changed both locally and
+  remotely) by taking the remote copy.
 - `--dry-run` — list what would be downloaded without writing any files.
 
 ### `gosf push <src> <project>:<path>`
@@ -205,13 +234,26 @@ $ gosf push ./figures/  abc12:/manuscript/figures/
 $ gosf push data.csv    abc12:/data/data.csv --conflict=overwrite
 ```
 
-Conflict handling (`--conflict`, default `skip`):
+A push is **idempotent**: uploading a file whose bytes already match the remote
+is skipped rather than minting a redundant version.
+
+Conflict handling for an *explicit* push (`--conflict`, default `skip`):
 
 | Mode | Behaviour when a file already exists |
 |------|--------------------------------------|
 | `skip` | Leave the existing file untouched (default) |
-| `overwrite` | Replace it with the local file |
+| `overwrite` | Replace it with the local file (new version) |
 | `rename` | Upload as `name_1.ext`, `name_2.ext`, … |
+
+With no arguments, `gosf push` pushes the push-eligible entries from
+`.gosf/gosf.toml`. Because that writes remote data, it prints a per-file plan
+(project title + visibility, the action per file, sizes and MD5s) and asks for
+confirmation:
+
+- `--yes` — skip the prompt for a safe push (new files, real updates).
+- `--force` — also authorize a *rollback* (overwriting a newer remote version).
+- `--resolve=ours` — resolve a diverged file by taking the local copy.
+- In `--output=json` mode, `--force` is required (there is no prompt).
 
 ### `gosf rm <project>:<path>`
 
@@ -249,15 +291,40 @@ VERSION  DATE                  SIZE     CONTRIBUTOR
 1        2024-01-20 08:00 UTC  12.1 MB  ada@example.com
 ```
 
-### `gosf add <local-path> <project>:<remote-path>`
+### `gosf init <project-id>`
 
-Add a file to the `gosf.toml` sync manifest (creates `gosf.toml` if it doesn't
-exist). The `--direction` flag controls which way the file flows (default: push).
+Create or update `.gosf/gosf.toml` in the current directory, setting the default
+project GUID. Existing `[[files]]` entries are preserved.
 
 ```console
-$ gosf add data/counts.h5 abc12:/data/counts.h5 --direction=pull
-$ gosf add results/model.pkl abc12:/results/model.pkl --direction=push
-$ gosf add shared/ref.csv abc12:/shared/ref.csv --direction=both
+$ gosf init abc12
+```
+
+### `gosf mkdir <project>:<path>`
+
+Create a folder in OSF Storage (the parent folder must already exist).
+
+### `gosf mv <src> <dest>` / `gosf cp <src> <dest>`
+
+Move/rename or copy a file or folder within or across projects
+(`--conflict=keep|replace|warn`).
+
+### `gosf set <project>`
+
+Update a project's title, description, category, and/or tags (only the flags you
+pass are changed).
+
+### `gosf add <local-path> [<project>:]<remote-path>`
+
+Stage a file (or directory, recursively) in the `.gosf/gosf.toml` manifest for
+**push** (creates the manifest if absent). To record a file for *pull* instead,
+use `gosf pull`, which tracks what it downloads. If the remote path is omitted it
+mirrors the local path.
+
+```console
+$ gosf add results/model.pkl abc12:/results/model.pkl
+$ gosf add data/raw/ abc12:/data/raw/        # add a directory, one entry per file
+$ gosf add notes.md                          # remote mirrors the local path
 ```
 
 If the file already exists on OSF its current version and MD5 are recorded in
@@ -265,18 +332,24 @@ the manifest automatically. Files larger than 50 MB get a `.gitignore` tip.
 
 ### `gosf status`
 
-Show the sync state of every file in `gosf.toml`.
+Show the sync state of every file in `.gosf/gosf.toml`.
 
 ```console
 $ gosf status
-DIR   STATUS  LOCAL PATH             VER   DETAIL
-pull  ✓       data/counts.h5         v3
-push  AHEAD   results/model.pkl      v1    unpushed changes
-pull  BEHIND  shared/ref.csv         v2    remote is v3
-push  ·       outputs/report.pdf     —     never pushed
+DIR   STATUS    LOCAL PATH             VER   DETAIL
+pull  ✓         data/counts.h5         v3
+push  AHEAD     results/model.pkl      v1    unpushed changes
+pull  BEHIND    shared/ref.csv         v2    remote is v3
+pull  ≡         inputs/ref.csv         —     identical to remote v2, unpinned — run sync
+push  DIVERGED  notes/summary.md       v1    local and remote both changed since v1
+push  ·         outputs/report.pdf     —     never pushed
 ```
 
-Exit code 0 when everything is in sync; exit code 1 otherwise — useful in CI.
+Status is read-only — it reports, it never mutates the manifest. It also
+content-compares **unpinned** (`version = 0`) entries against the remote, so an
+already-identical file shows `≡`/`PIN_ONLY` rather than a blanket "never pushed".
+
+Exit code 0 when everything is `IN_SYNC`; exit code 1 otherwise — useful in CI.
 
 Flags:
 - `--no-check-remote` — skip remote version lookups (faster; cannot detect
@@ -284,37 +357,47 @@ Flags:
 
 ### `gosf sync`
 
-Push and/or pull files according to the manifest.
+Reconcile files with OSF according to the manifest. Push-eligible entries
+(`direction=push` or `both`) are pushed; pull-only entries (`direction=pull`) are
+pulled. `sync` is non-interactive and fails hard (before transferring anything)
+on a diverged file.
 
 ```console
-$ gosf sync                # push all push/both entries that changed
-$ gosf sync --pull-new     # also pull missing/stale pull entries
-$ gosf sync --dry-run      # preview without making changes
-$ gosf sync --force        # with --pull-new, overwrite locally modified files
+$ gosf sync                       # push push/both entries, pull pull entries
+$ gosf sync --dry-run             # preview without making changes
+$ gosf sync --force               # authorize rollbacks / overwrite local edits
+$ gosf sync --resolve=theirs      # resolve diverged files by taking remote
 ```
+
+Actions are chosen from the file's state, comparing **L**ocal, the pinned
+**B**aseline, and the **R**emote latest:
 
 | State | Action |
 |-------|--------|
-| `IN_SYNC` | Print ✓, skip |
-| `AHEAD_OF_MANIFEST` | Push, update manifest |
-| `NOT_PUSHED` (file exists) | Push, record in manifest |
-| `NOT_PUSHED` (file missing) | Print ·, skip |
-| `MISSING` | Print ✗, skip |
-| `BEHIND` / `REMOTE_NEWER` | Push as new version, update manifest |
-
-With `--pull-new`, pull-eligible (`direction=pull` or `both`) entries that are
-`MISSING` or `BEHIND` are also downloaded.
+| `IN_SYNC` | ✓ skip |
+| `PIN_ONLY` (local already matches remote) | record the pin, no transfer |
+| `AHEAD_OF_MANIFEST` (only local changed) | push new version |
+| `REMOTE_NEWER` (only remote changed) | pull: fast-forward; push: refuse unless `--force` |
+| `BEHIND` | pull: restore; push: refuse unless `--force` |
+| `NOT_PUSHED` (file exists) | push new file |
+| `MISSING` / `NOT_PUSHED` (missing) | pull to restore / skip |
+| `DIVERGED` (both changed) | **fail hard** — needs `--resolve=ours\|theirs` |
 
 Flags:
-- `--pull-new` — pull MISSING/BEHIND pull-eligible entries in addition to pushing.
-- `--force` — with `--pull-new`, overwrite locally modified files.
+- `--force` — authorize a remote-newer/behind rollback, and overwrite a
+  locally-modified file on pull. Does **not** cover divergence.
+- `--resolve=ours\|theirs` — resolve diverged entries (`ours` keeps local,
+  `theirs` keeps remote).
 - `--dry-run` — show what would happen without making any changes.
-- `--no-check-remote` — skip remote version lookups (faster; cannot detect `BEHIND` or `REMOTE_NEWER`).
+- `--no-check-remote` — skip remote version lookups (faster; cannot detect
+  `BEHIND` or `REMOTE_NEWER`).
 
-## Sync manifest (`gosf.toml`)
+## Sync manifest (`.gosf/gosf.toml`)
 
-Place `gosf.toml` at your repository root (or in any parent directory) to
-declare which OSF files belong to the project:
+The manifest lives at `.gosf/gosf.toml` in your repository root (gosf walks up
+from the current directory to find it). Create it with `gosf init <project-id>`,
+or let `gosf add` / `gosf pull` create it for you. It declares which OSF files
+belong to the project:
 
 ```toml
 [project]
@@ -362,13 +445,13 @@ $ gosf status --output=json
 [{"path":"data/counts.h5","direction":"pull","state":"IN_SYNC","declared_version":3}]
 
 $ gosf sync --output=json
-[{"path":"results/model.pkl","state":"AHEAD_OF_MANIFEST","declared_version":1,"action_taken":"pushed"}]
+[{"path":"results/model.pkl","state":"AHEAD_OF_MANIFEST","declared_version":1,"action_taken":"push"}]
 
 $ gosf versions abc12:/data/counts.h5 --output=json
 {"versions": [{"version":3,"date_created":"2024-03-01T09:15:00","size":14900000,"contributor":"ada@example.com"}]}
 
 $ gosf add data/new.csv abc12:/data/new.csv --output=json
-{"local":"data/new.csv","remote":"/data/new.csv","project":"abc12","direction":"push","version":0,"md5":"","manifest_created":false}
+{"entries":[{"local":"data/new.csv","remote":"/data/new.csv","project":"abc12","version":0,"md5":""}],"manifest_created":false}
 ```
 
 In JSON mode, `gosf rm` requires `--yes` (there is no interactive prompt).
@@ -379,27 +462,13 @@ In JSON mode, `gosf rm` requires `--yes` (there is no interactive prompt).
 |------|-------------|
 | `--token <token>` | Use this OSF token (overrides env/config/keychain) |
 | `--output text\|json` | Output format (default `text`) |
+| `--color auto\|always\|never` | Colorize output (default `auto`: on only at a TTY, off under `--output=json`/`--quiet`/`NO_COLOR`) |
 | `--quiet`, `-q` | Suppress progress and non-error output |
 | `--version` | Print the version |
 
 ## Exit codes
 
 `gosf` exits non-zero on any error, so it composes cleanly in scripts and CI.
-
-## For coding agents
-
-`gosf` ships a [skills.sh](https://skills.sh) agent skill so AI coding agents
-can understand and invoke it without hand-written instructions.
-
-Install the skill in your project (supported by Claude Code, GitHub Copilot,
-Codex, and 38+ other agents):
-
-```console
-npx skills add BU-Neuromics/gosf
-```
-
-The skill covers authentication, path syntax, the `gosf.toml` manifest, all
-commands, and common workflows. The source lives in [`skills/gosf/SKILL.md`](./skills/gosf/SKILL.md).
 
 ## Development
 
