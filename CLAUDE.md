@@ -387,12 +387,41 @@ All other errors are printed to stderr and exit 1. `rootCmd.SilenceErrors = true
 - Vet: `go vet ./...`
 - The OSF API requires no auth for public projects; token elevates to private
 
+### Test tiers
+
+1. **Unit** — pure functions and HTTP clients against `httptest` (`go test ./...`).
+2. **Integration** (`-tags integration`, `integration/`) — the built binary driven
+   against the in-process `fakeosf` server. Fast, hermetic, runs in CI.
+3. **Live** (`-tags live`, `integration/live/`) — the built binary against a **real**
+   private OSF project. Compiled only under `-tags live`; each test skips unless
+   `OSF_TEST_TOKEN` + `OSF_TEST_PROJECT` (+ optional `OSF_TEST_COMPONENT`) are set.
+   Tests write under a unique `/gosf-ci-<nano>-<pid>/` folder and delete it on
+   cleanup, so they are repeatable and leave no residue. Run privately:
+   ```
+   OSF_TEST_TOKEN=… OSF_TEST_PROJECT=… OSF_TEST_COMPONENT=… \
+     go test -tags live -count=1 -v ./integration/live/...
+   ```
+   The `fakeosf` server encodes our *assumptions*; the live tier catches where real
+   OSF/Waterbutler diverges (e.g. the cross-project new-version push 404, captured
+   by the skipped `TestLive_ComponentPushNewVersion` regression test).
+
+### Branch model
+
+`dev` is the integration branch and the repo default: **PRs target `dev`** and get
+the full non-live CI. `main` is the release branch; promote `dev` → `main` once the
+live suite is green.
+
 ### CI / Release
 
-- `.github/workflows/ci.yml` runs on every push to `main` and every PR:
-  gofmt check, `go vet`, `go test -race`, a build, and a cross-compile matrix
-  over linux/darwin/windows × amd64/arm64. The Go version is read from
-  `go.mod` via `go-version-file`, so bumping the toolchain is a one-line change.
+- `.github/workflows/ci.yml` runs on every push to `main`/`dev` and every PR:
+  gofmt check, `go vet`, `go test -race`, integration tests, a build, and a
+  cross-compile matrix over linux/darwin/windows × amd64/arm64. The Go version is
+  read from `go.mod` via `go-version-file`, so bumping the toolchain is a one-line
+  change.
+- `.github/workflows/live.yml` runs the live suite on **push to `dev`** and manual
+  `workflow_dispatch` (never on PRs). Serialized via a `live-osf` concurrency group.
+  Requires repo secret `OSF_TEST_TOKEN` and repo variables `OSF_TEST_PROJECT` /
+  `OSF_TEST_COMPONENT`; skips gracefully if the token is absent.
 - `.github/workflows/release.yml` runs on a `v*` tag push and invokes
   GoReleaser (`release --clean`) using `.goreleaser.yaml` to build and publish
   the cross-platform archives + checksums to a GitHub Release.

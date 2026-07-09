@@ -1,0 +1,42 @@
+name: Live OSF Tests
+
+# Live tests hit a real private OSF project and mutate remote state, so they run
+# only on merges to the integration branch (dev) and on manual dispatch — never
+# on PRs (secrets are not exposed to fork PRs) and never on main.
+on:
+  push:
+    branches: [dev]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Serialize runs: the tests share one OSF project, so overlapping runs could
+# collide. Queue rather than cancel so in-flight cleanup completes.
+concurrency:
+  group: live-osf
+  cancel-in-progress: false
+
+jobs:
+  live:
+    name: Live OSF integration
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Run live OSF tests
+        env:
+          OSF_TEST_TOKEN: ${{ secrets.OSF_TEST_TOKEN }}
+          OSF_TEST_PROJECT: ${{ vars.OSF_TEST_PROJECT }}
+          OSF_TEST_COMPONENT: ${{ vars.OSF_TEST_COMPONENT }}
+        run: |
+          if [ -z "$OSF_TEST_TOKEN" ] || [ -z "$OSF_TEST_PROJECT" ]; then
+            echo "::warning::OSF_TEST_TOKEN / OSF_TEST_PROJECT not configured — skipping live suite."
+            exit 0
+          fi
+          go test -tags live -count=1 -v ./integration/live/...
