@@ -399,9 +399,13 @@ non-TTY). Detects state and enters at the first unsatisfied phase: **auth**
 picker in `internal/picker`, remote base via `--remote-base`/prompt) → writes
 `direction=push` entries and **stops**, pointing at `gosf sync`. Pure helpers
 (`untrackedCandidates`, `remotePath`) and the tree model are unit-tested; the
-interactive TUI needs a real TTY so only the guard paths run in integration.
-New deps: `charmbracelet/bubbletea` + `lipgloss` (pinned to keep the go 1.24
-toolchain).
+guard paths (non-TTY / `--output=json`) are integration-tested; and the full
+interactive flow is driven end-to-end over a **pseudo-terminal** in
+`integration/onboard_pty_test.go` (`creack/pty`). Because lipgloss/bubbletea
+query the terminal (OSC 11 background, CPR, DA1) and a bare PTY isn't an emulator,
+the test's reader answers those queries; it skips if a PTY can't be allocated.
+New deps: `charmbracelet/bubbletea` + `lipgloss` + `creack/pty` (pinned to keep
+the go 1.24 toolchain).
 
 ### Exit code handling
 
