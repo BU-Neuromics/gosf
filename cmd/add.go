@@ -198,17 +198,17 @@ Path rules follow scp conventions:
 
 		for _, e := range addEntries {
 			if e.Version > 0 {
-				fmt.Fprintf(os.Stdout, "Added %s → %s:%s  (v%d)\n", e.Local, e.Project, e.Remote, e.Version)
+				fmt.Fprintf(os.Stdout, "%s %s → %s:%s  (v%d)\n", output.Green("Added"), e.Local, e.Project, e.Remote, e.Version)
 			} else {
-				fmt.Fprintf(os.Stdout, "Added %s → %s:%s  (not yet pushed)\n", e.Local, e.Project, e.Remote)
+				fmt.Fprintf(os.Stdout, "%s %s → %s:%s  (not yet pushed)\n", output.Green("Added"), e.Local, e.Project, e.Remote)
 			}
 		}
 
 		// Warn about large local files.
 		for _, e := range entries {
 			if info, err := os.Stat(e.Local); err == nil && info.Size() > 50*1024*1024 {
-				fmt.Fprintf(os.Stdout, "Tip: consider adding %s to .gitignore (%s)\n",
-					e.Local, formatSizeMB(info.Size()))
+				fmt.Fprintf(os.Stdout, "%s consider adding %s to .gitignore (%s)\n",
+					output.Yellow("Tip:"), e.Local, formatSizeMB(info.Size()))
 			}
 		}
 

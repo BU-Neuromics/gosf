@@ -3,7 +3,6 @@ package cmd
 import (
 	"fmt"
 	"os"
-	"text/tabwriter"
 
 	"github.com/spf13/cobra"
 
@@ -38,15 +37,19 @@ Examples:
 		c := client.New(token)
 		res := resolver.New(c)
 
+		sp := output.NewSpinner("Fetching versions…")
 		item, err := res.Resolve(cmd.Context(), target.NodeID, target.Path)
 		if err != nil {
+			sp.Stop()
 			return friendlyAuthError(err)
 		}
 		if item.Attributes.Kind == "folder" {
+			sp.Stop()
 			return fmt.Errorf("%q is a folder; versions only applies to files", target.Path)
 		}
 
 		versions, err := c.GetFileVersions(cmd.Context(), item.ID)
+		sp.Stop()
 		if err != nil {
 			return fmt.Errorf("fetching versions: %w", err)
 		}
@@ -75,17 +78,21 @@ Examples:
 }
 
 func printVersionsTable(versions []client.FileVersion) {
-	w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "VERSION\tDATE\tSIZE\tCONTRIBUTOR")
-	for _, v := range versions {
-		fmt.Fprintf(w, "%d\t%s\t%s\t%s\n",
-			v.Attributes.Version,
-			output.FormatDate(v.Attributes.DateCreated),
-			output.FormatSize(v.Attributes.Size),
-			v.Contributor(),
-		)
+	var rows [][]output.Cell
+	for i, v := range versions {
+		// Highlight the latest (first, newest-first) version in cyan.
+		var verStyle func(string) string
+		if i == 0 {
+			verStyle = output.Cyan
+		}
+		rows = append(rows, []output.Cell{
+			{Text: fmt.Sprintf("%d", v.Attributes.Version), Style: verStyle},
+			{Text: output.FormatDate(v.Attributes.DateCreated), Style: output.Dim},
+			{Text: output.FormatSize(v.Attributes.Size)},
+			{Text: v.Contributor()},
+		})
 	}
-	w.Flush()
+	output.RenderTable(os.Stdout, []string{"VERSION", "DATE", "SIZE", "CONTRIBUTOR"}, rows)
 }
 
 func init() {

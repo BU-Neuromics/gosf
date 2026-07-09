@@ -25,7 +25,9 @@ Requires a valid token (set via 'gosf auth login', --token flag, or OSF_TOKEN).`
 		}
 
 		c := client.New(token)
+		sp := output.NewSpinner("Fetching projects…")
 		nodes, err := c.GetUserNodes(cmd.Context())
+		sp.Stop()
 		if err != nil {
 			if apiErr, ok := err.(*client.APIError); ok && apiErr.StatusCode == 401 {
 				return fmt.Errorf("invalid token — run 'gosf auth login' to re-authenticate")
@@ -48,22 +50,22 @@ func printNodesTable(nodes []client.Node) {
 		return
 	}
 
-	w := output.NewTabWriter(os.Stdout)
-	defer w.Flush()
-
-	fmt.Fprintln(w, "TITLE\tGUID\tVISIBILITY\tMODIFIED")
+	var rows [][]output.Cell
 	for _, n := range nodes {
 		vis := "private"
+		visStyle := output.Dim
 		if n.Attributes.Public {
 			vis = "public"
+			visStyle = output.Yellow // public is worth noticing
 		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\n",
-			n.Attributes.Title,
-			n.ID,
-			vis,
-			output.FormatDate(n.Attributes.DateModified),
-		)
+		rows = append(rows, []output.Cell{
+			{Text: n.Attributes.Title},
+			{Text: n.ID, Style: output.Dim},
+			{Text: vis, Style: visStyle},
+			{Text: output.FormatDate(n.Attributes.DateModified), Style: output.Dim},
+		})
 	}
+	output.RenderTable(os.Stdout, []string{"TITLE", "GUID", "VISIBILITY", "MODIFIED"}, rows)
 }
 
 func init() {

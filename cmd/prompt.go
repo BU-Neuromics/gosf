@@ -39,14 +39,36 @@ func printPushPlan(w io.Writer, node *client.Node, projectID string, plans []ent
 		}
 	}
 
-	fmt.Fprintf(w, "Pushing %d file(s) to %q (%s, %s)\n", len(plans), title, projectID, visibility)
+	visStyled := output.Dim(visibility)
 	if public {
-		fmt.Fprintf(w, "  ⚠  WARNING: this project is PUBLIC — pushed files are visible to everyone.\n")
+		visStyled = output.RedBold(visibility)
+	}
+	fmt.Fprintf(w, "%s %q (%s, %s)\n", output.Bold("Pushing "+fmt.Sprint(len(plans))+" file(s) to"), title, projectID, visStyled)
+	if public {
+		fmt.Fprintln(w, output.RedBold("  ⚠  WARNING: this project is PUBLIC — pushed files are visible to everyone."))
 	}
 	for i := range plans {
 		fmt.Fprintln(w, pushItemLine(plans[i], states[i]))
 	}
-	fmt.Fprintf(w, "Summary: %s\n", summarizePush(states))
+	fmt.Fprintf(w, "Summary: %s\n", output.Bold(summarizePush(states)))
+}
+
+// pushLabelStyle colors a push action label in the plan.
+func pushLabelStyle(state manifest.FileState) func(string) string {
+	switch state {
+	case manifest.StateNotPushed:
+		return output.Green // new
+	case manifest.StateAheadOfManifest:
+		return output.Cyan // update
+	case manifest.StateRemoteNewer, manifest.StateBehind:
+		return output.Yellow // rollback
+	case manifest.StateDivergent:
+		return output.RedBold
+	case manifest.StateMissing:
+		return output.Red
+	default:
+		return output.Dim // pin / unchanged
+	}
 }
 
 // pushItemLine renders one file's line in the push plan.
@@ -78,5 +100,6 @@ func pushItemLine(p entryPlan, state manifest.FileState) string {
 	case manifest.StateMissing:
 		detail = "missing locally"
 	}
-	return fmt.Sprintf("  %-9s %s → %s  (%s)", label, p.entry.Local, target, detail)
+	labelCell := pushLabelStyle(state)(fmt.Sprintf("%-9s", label))
+	return fmt.Sprintf("  %s %s → %s  %s", labelCell, p.entry.Local, target, output.Dim("("+detail+")"))
 }

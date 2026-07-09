@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"text/tabwriter"
 
 	"github.com/spf13/cobra"
 
@@ -41,12 +40,14 @@ var statusCmd = &cobra.Command{
 
 		jsonMode := flagOutput == "json"
 		allInSync := true
-		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-		if !jsonMode {
-			fmt.Fprintln(w, "DIR\tSTATUS\tLOCAL PATH\tVER\tDETAIL")
-		}
 
 		jsonItems := make([]output.StatusItem, 0)
+		var rows [][]output.Cell
+
+		var sp *output.Spinner
+		if !statusNoCheckRemote && !jsonMode {
+			sp = output.NewSpinner("Checking remote…")
+		}
 
 		for _, entry := range m.Files {
 			localAbs := filepath.Join(repoRoot, entry.Local)
@@ -80,10 +81,18 @@ var statusCmd = &cobra.Command{
 				jsonItems = append(jsonItems, buildStatusItem(entry, state, remoteVersions))
 			} else {
 				statusStr, detail := stateDisplay(state, entry, remoteVersions)
-				verStr := verLabel(entry.Version)
-				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n",
-					entry.Direction, statusStr, entry.Local, verStr, detail)
+				rows = append(rows, []output.Cell{
+					{Text: entry.Direction},
+					{Text: statusStr, Style: stateStyle(state)},
+					{Text: entry.Local},
+					{Text: verLabel(entry.Version)},
+					{Text: detail, Style: output.Dim},
+				})
 			}
+		}
+
+		if sp != nil {
+			sp.Stop()
 		}
 
 		if jsonMode {
@@ -91,7 +100,7 @@ var statusCmd = &cobra.Command{
 				return err
 			}
 		} else {
-			w.Flush()
+			output.RenderTable(os.Stdout, []string{"DIR", "STATUS", "LOCAL PATH", "VER", "DETAIL"}, rows)
 		}
 
 		if !allInSync {
@@ -99,6 +108,27 @@ var statusCmd = &cobra.Command{
 		}
 		return nil
 	},
+}
+
+// stateStyle maps a file state to the color applied to its status glyph.
+// Returns nil (no styling) for states without a distinct color.
+func stateStyle(state manifest.FileState) func(string) string {
+	switch state {
+	case manifest.StateInSync:
+		return output.Green
+	case manifest.StateMissing:
+		return output.Red
+	case manifest.StateDivergent:
+		return output.RedBold
+	case manifest.StateBehind, manifest.StateAheadOfManifest:
+		return output.Yellow
+	case manifest.StateRemoteNewer:
+		return output.Cyan
+	case manifest.StatePinOnly, manifest.StateNotPushed:
+		return output.Dim
+	default:
+		return nil
+	}
 }
 
 // stateDisplay returns the display string and detail for a file state.

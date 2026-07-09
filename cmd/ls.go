@@ -33,7 +33,9 @@ Examples:
 		c := client.New(token)
 		res := resolver.New(c)
 
+		sp := output.NewSpinner("Listing…")
 		items, err := res.ListDir(cmd.Context(), target.NodeID, target.Path)
+		sp.Stop()
 		if err != nil {
 			return friendlyAuthError(err)
 		}
@@ -58,21 +60,25 @@ Examples:
 }
 
 func printFileTable(items []client.FileItem) {
-	w := output.NewTabWriter(os.Stdout)
-	defer w.Flush()
-
-	output.PrintHeader(w)
+	var rows [][]output.Cell
 	for _, item := range items {
 		name := item.Attributes.Name
 		size := "—"
+		var nameStyle func(string) string
 		if item.Attributes.Kind == "folder" {
 			name = name + "/"
+			nameStyle = output.Cyan // folders stand out
 		} else {
 			size = output.FormatSize(item.Attributes.Size)
 		}
 		modified := output.FormatDate(item.Attributes.DateModified)
-		fmt.Fprintf(w, "%s\t%s\t%s\n", name, size, modified)
+		rows = append(rows, []output.Cell{
+			{Text: name, Style: nameStyle},
+			{Text: size, Style: output.Dim},
+			{Text: modified, Style: output.Dim},
+		})
 	}
+	output.RenderTable(os.Stdout, []string{"NAME", "SIZE", "MODIFIED"}, rows)
 }
 
 func init() {

@@ -142,7 +142,9 @@ func runExplicitPull(cmd *cobra.Command, args []string, osfClient *client.OSFCli
 	}
 
 	res := resolver.New(osfClient)
+	sp := output.NewSpinner("Resolving…")
 	items, err := res.ListDir(cmd.Context(), target.NodeID, target.Path)
+	sp.Stop()
 	if err != nil {
 		return friendlyAuthError(err)
 	}
@@ -327,7 +329,7 @@ func (s *pullSession) file(item client.FileItem, destPath string) error {
 	identical := s.version == 0 && localFileMatches(destPath, item.Attributes.Extra.Hashes.MD5)
 	if identical {
 		if !s.quiet && !s.jsonMode {
-			fmt.Fprintf(os.Stderr, "≡  %s (identical, skipped)\n", destPath)
+			fmt.Fprintf(os.Stderr, "%s  %s (identical, skipped)\n", output.Dim("≡"), destPath)
 		}
 		s.result.Add(destPath, item.Attributes.Size)
 	} else {

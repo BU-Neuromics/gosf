@@ -12,6 +12,7 @@ import (
 	"github.com/spf13/viper"
 
 	"github.com/BU-Neuromics/gosf/internal/config"
+	"github.com/BU-Neuromics/gosf/internal/output"
 )
 
 // version is set at build time via -ldflags "-X github.com/BU-Neuromics/gosf/cmd.version=vX.Y.Z"
@@ -22,6 +23,7 @@ var (
 	flagToken  string
 	flagOutput string
 	flagQuiet  bool
+	flagColor  string
 )
 
 var rootCmd = &cobra.Command{
@@ -37,6 +39,12 @@ var rootCmd = &cobra.Command{
 		if flagOutput != "text" && flagOutput != "json" {
 			return fmt.Errorf("--output must be 'text' or 'json', got %q", flagOutput)
 		}
+		switch flagColor {
+		case "auto", "always", "never":
+		default:
+			return fmt.Errorf("--color must be 'auto', 'always', or 'never', got %q", flagColor)
+		}
+		output.InitColor(flagColor, flagOutput == "json", flagQuiet)
 		return nil
 	},
 }
@@ -70,7 +78,7 @@ func Execute() {
 		if errors.As(err, &exitErr) {
 			os.Exit(exitErr.code)
 		}
-		fmt.Fprintln(os.Stderr, "Error:", err)
+		fmt.Fprintln(os.Stderr, output.Red("Error:"), err)
 		os.Exit(1)
 	}
 }
@@ -79,6 +87,7 @@ func init() {
 	rootCmd.PersistentFlags().StringVar(&flagToken, "token", "", "OSF personal access token (overrides env/config/keychain)")
 	rootCmd.PersistentFlags().StringVar(&flagOutput, "output", "text", "Output format: text or json")
 	rootCmd.PersistentFlags().BoolVarP(&flagQuiet, "quiet", "q", false, "Suppress progress and non-error output")
+	rootCmd.PersistentFlags().StringVar(&flagColor, "color", "auto", "Colorize output: auto, always, or never")
 
 	// Bind OSF_TOKEN env var via viper so --token and OSF_TOKEN work the same way.
 	viper.SetEnvPrefix("OSF")

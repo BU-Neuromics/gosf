@@ -357,7 +357,7 @@ func (s *pushSession) file(srcPath, nodeID, destPath string) error {
 		if redundantOverwrite(plan.action, localMD5, existingItem.Attributes.Extra.Hashes.MD5) {
 			s.result.Add(destFull, "skip")
 			if !s.jsonMode && !s.quiet {
-				fmt.Fprintf(os.Stderr, "≡  %s (identical, skipped)\n", destFull)
+				fmt.Fprintf(os.Stderr, "%s  %s (identical, skipped)\n", output.Dim("≡"), destFull)
 			}
 			return nil
 		}
@@ -367,7 +367,7 @@ func (s *pushSession) file(srcPath, nodeID, destPath string) error {
 	case plan.action == "skip":
 		s.result.Add(destFull, "skip")
 		if !s.jsonMode && !s.quiet {
-			fmt.Fprintf(os.Stderr, "skip  %s (already exists)\n", destFull)
+			fmt.Fprintf(os.Stderr, "%s  %s (already exists)\n", output.Dim("skip"), destFull)
 		}
 		return nil
 	case s.dryRun:
@@ -380,9 +380,9 @@ func (s *pushSession) file(srcPath, nodeID, destPath string) error {
 
 	if !s.quiet {
 		if plan.action == "overwrite" {
-			fmt.Fprintf(os.Stderr, "overwrite %s → %s (new version created)\n", srcPath, destFull)
+			fmt.Fprintf(os.Stderr, "%s %s → %s (new version created)\n", output.Cyan("overwrite"), srcPath, destFull)
 		} else {
-			fmt.Fprintf(os.Stderr, "%s %s → %s\n", plan.action, srcPath, destFull)
+			fmt.Fprintf(os.Stderr, "%s %s → %s\n", output.Green(plan.action), srcPath, destFull)
 		}
 	}
 	uploadResult, err := s.wb.Upload(s.ctx, srcPath, plan.url, s.quiet)
