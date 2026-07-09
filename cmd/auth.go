@@ -10,6 +10,7 @@ import (
 
 	"github.com/BU-Neuromics/gosf/internal/client"
 	"github.com/BU-Neuromics/gosf/internal/config"
+	"github.com/BU-Neuromics/gosf/internal/output"
 )
 
 var authCmd = &cobra.Command{
@@ -123,8 +124,12 @@ var authLogoutCmd = &cobra.Command{
 	Short:        "Remove stored OSF token",
 	SilenceUsage: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if err := config.DeleteToken(); err != nil {
+		warning, err := config.DeleteToken()
+		if err != nil {
 			return fmt.Errorf("removing token: %w", err)
+		}
+		if warning != "" && !flagQuiet {
+			fmt.Fprintln(os.Stderr, output.Yellow("warning:"), warning)
 		}
 		fmt.Fprintln(os.Stdout, "Logged out.")
 		return nil

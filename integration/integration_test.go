@@ -45,12 +45,26 @@ func buildBinary() (string, error) {
 	}
 
 	bin := filepath.Join(tmp, "gosf")
-	cmd := exec.Command("go", "build", "-o", bin, ".")
+	buildArgs := []string{"build", "-o", bin, "."}
+	if os.Getenv("GOSF_COVERDIR") != "" {
+		// Instrument the binary so subprocess runs emit coverage into GOCOVERDIR.
+		buildArgs = []string{"build", "-cover", "-o", bin, "."}
+	}
+	cmd := exec.Command("go", buildArgs...)
 	cmd.Dir = repoRoot
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return "", fmt.Errorf("build failed: %s", out)
 	}
 	return bin, nil
+}
+
+// coverEnv returns a GOCOVERDIR entry for the subprocess when GOSF_COVERDIR is
+// set, so an instrumented binary writes its coverage there; empty otherwise.
+func coverEnv() []string {
+	if dir := os.Getenv("GOSF_COVERDIR"); dir != "" {
+		return []string{"GOCOVERDIR=" + dir}
+	}
+	return nil
 }
 
 // testEnv wraps a temp working directory and fake server for one test.
@@ -83,6 +97,38 @@ func (e *testEnv) run(args ...string) (stdout, stderr string, code int) {
 		"HOME="+e.dir,
 		"XDG_CONFIG_HOME="+filepath.Join(e.dir, ".config"),
 	)
+	cmd.Env = append(cmd.Env, coverEnv()...)
+	var outBuf, errBuf bytes.Buffer
+	cmd.Stdout = &outBuf
+	cmd.Stderr = &errBuf
+	if err := cmd.Run(); err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			code = exitErr.ExitCode()
+		} else {
+			code = 1
+		}
+	}
+	return outBuf.String(), errBuf.String(), code
+}
+
+// runClean runs gosf like run() but with NO forced OSF_TOKEN (it is cleared) and
+// optional stdin, so auth tests fully control the token source. Storage stays
+// isolated in the test's temp HOME/XDG dir.
+func (e *testEnv) runClean(stdin string, args ...string) (stdout, stderr string, code int) {
+	e.t.Helper()
+	cmd := exec.Command(binaryPath, args...)
+	cmd.Dir = e.dir
+	cmd.Env = append(os.Environ(),
+		"GOSF_API_BASE="+e.srv.URL()+"/v2",
+		"GOSF_FILES_BASE="+e.srv.URL(),
+		"HOME="+e.dir,
+		"XDG_CONFIG_HOME="+filepath.Join(e.dir, ".config"),
+		"OSF_TOKEN=", // clear any inherited token; auth tests set their own source
+	)
+	cmd.Env = append(cmd.Env, coverEnv()...)
+	if stdin != "" {
+		cmd.Stdin = strings.NewReader(stdin)
+	}
 	var outBuf, errBuf bytes.Buffer
 	cmd.Stdout = &outBuf
 	cmd.Stderr = &errBuf
@@ -1907,6 +1953,89 @@ md5       = ""
 	}
 	if len(env.srv.Uploads()) != 1 {
 		t.Errorf("expected 1 upload with --force, got %d", len(env.srv.Uploads()))
+	}
+}
+
+// ---- Auth ----
+
+func TestAuth_StatusUnauthenticated(t *testing.T) {
+	env := newTestEnv(t)
+	stdout, _, code := env.runClean("", "auth", "status")
+	if code != 0 {
+		t.Fatalf("auth status (unauth) exit %d", code)
+	}
+	if !strings.Contains(stdout, "Not logged in") {
+		t.Errorf("expected 'Not logged in', got %q", stdout)
+	}
+}
+
+func TestAuth_StatusFromEnvToken(t *testing.T) {
+	env := newTestEnv(t)
+	// run() sets OSF_TOKEN=test-token; the fake accepts any bearer by default.
+	stdout, stderr, code := env.run("auth", "status")
+	if code != 0 {
+		t.Fatalf("auth status exit %d; stderr=%s", code, stderr)
+	}
+	if !strings.Contains(stdout, "Logged in as: Test User") {
+		t.Errorf("expected logged-in identity, got %q", stdout)
+	}
+	if !strings.Contains(stdout, "OSF_TOKEN environment variable") {
+		t.Errorf("expected token source to be the env var, got %q", stdout)
+	}
+}
+
+func TestAuth_LoginStatusLogout(t *testing.T) {
+	env := newTestEnv(t)
+
+	// login: pipe the token on stdin, store to the token file (no keychain).
+	out, stderr, code := env.runClean("secret-token\n", "auth", "login", "--no-keychain")
+	if code != 0 {
+		t.Fatalf("auth login exit %d; stderr=%s", code, stderr)
+	}
+	if !strings.Contains(out, "Logged in as Test User") {
+		t.Errorf("expected login confirmation, got %q", out)
+	}
+
+	// status: now reads the token file.
+	out, _, code = env.runClean("", "auth", "status")
+	if code != 0 || !strings.Contains(out, "Logged in as: Test User") {
+		t.Fatalf("auth status after login: exit %d, out=%q", code, out)
+	}
+	if !strings.Contains(out, "token file") {
+		t.Errorf("expected token source 'token file', got %q", out)
+	}
+
+	// logout: removes the stored token.
+	out, stderr, code = env.runClean("", "auth", "logout")
+	if code != 0 {
+		t.Fatalf("auth logout exit %d; stderr=%s", code, stderr)
+	}
+	if !strings.Contains(out, "Logged out") {
+		t.Errorf("expected 'Logged out', got %q", out)
+	}
+
+	// status: back to unauthenticated.
+	out, _, _ = env.runClean("", "auth", "status")
+	if !strings.Contains(out, "Not logged in") {
+		t.Errorf("expected 'Not logged in' after logout, got %q", out)
+	}
+}
+
+func TestAuth_LoginInvalidToken(t *testing.T) {
+	env := newTestEnv(t)
+	env.srv.SetValidToken("good-token") // anything else 401s
+
+	_, stderr, code := env.runClean("wrong-token\n", "auth", "login", "--no-keychain")
+	if code == 0 {
+		t.Fatalf("auth login with a bad token should fail; stderr=%s", stderr)
+	}
+	if !strings.Contains(stderr, "invalid token") {
+		t.Errorf("expected 'invalid token' error, got %q", stderr)
+	}
+	// A failed login must not leave a stored token behind.
+	out, _, _ := env.runClean("", "auth", "status")
+	if !strings.Contains(out, "Not logged in") {
+		t.Errorf("failed login should store nothing, got %q", out)
 	}
 }
 
