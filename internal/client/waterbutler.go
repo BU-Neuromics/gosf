@@ -59,9 +59,9 @@ func (c *WaterbutlerClient) authHeader() string {
 }
 
 // Download fetches content from a Waterbutler download URL and writes it to
-// destPath, showing a progress bar unless quiet is true.
+// destPath, drawing a progress bar only when showProgress is true.
 // size is the expected byte count for the progress bar; pass -1 if unknown.
-func (c *WaterbutlerClient) Download(ctx context.Context, downloadURL, destPath string, size int64, quiet bool) error {
+func (c *WaterbutlerClient) Download(ctx context.Context, downloadURL, destPath string, size int64, showProgress bool) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, downloadURL, nil)
 	if err != nil {
 		return err
@@ -92,7 +92,7 @@ func (c *WaterbutlerClient) Download(ctx context.Context, downloadURL, destPath 
 	defer f.Close()
 
 	var dst io.Writer = f
-	if !quiet {
+	if showProgress {
 		bar := progressbar.NewOptions64(size,
 			progressbar.OptionSetDescription(truncateName(destPath, 30)),
 			progressbar.OptionShowBytes(true),
@@ -119,10 +119,10 @@ type UploadResult struct {
 	MD5     string
 }
 
-// Upload sends a local file to a Waterbutler upload URL, showing a progress
-// bar unless quiet is true. Use RootUploadURL/AppendUploadName for new files.
-// Returns UploadResult with the new version number and MD5 hash.
-func (c *WaterbutlerClient) Upload(ctx context.Context, srcPath, uploadURL string, quiet bool) (UploadResult, error) {
+// Upload sends a local file to a Waterbutler upload URL, drawing a progress
+// bar only when showProgress is true. Use RootUploadURL/AppendUploadName for new
+// files. Returns UploadResult with the new version number and MD5 hash.
+func (c *WaterbutlerClient) Upload(ctx context.Context, srcPath, uploadURL string, showProgress bool) (UploadResult, error) {
 	f, err := os.Open(srcPath)
 	if err != nil {
 		return UploadResult{}, fmt.Errorf("opening %s: %w", srcPath, err)
@@ -136,7 +136,7 @@ func (c *WaterbutlerClient) Upload(ctx context.Context, srcPath, uploadURL strin
 	size := info.Size()
 
 	var body io.Reader = f
-	if !quiet {
+	if showProgress {
 		bar := progressbar.NewOptions64(size,
 			progressbar.OptionSetDescription(truncateName(srcPath, 30)),
 			progressbar.OptionShowBytes(true),

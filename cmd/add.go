@@ -10,6 +10,7 @@ import (
 
 	"github.com/BU-Neuromics/gosf/internal/client"
 	"github.com/BU-Neuromics/gosf/internal/config"
+	"github.com/BU-Neuromics/gosf/internal/log"
 	"github.com/BU-Neuromics/gosf/internal/manifest"
 	"github.com/BU-Neuromics/gosf/internal/output"
 	"github.com/BU-Neuromics/gosf/internal/pathutil"
@@ -198,17 +199,16 @@ Path rules follow scp conventions:
 
 		for _, e := range addEntries {
 			if e.Version > 0 {
-				fmt.Fprintf(os.Stdout, "%s %s → %s:%s  (v%d)\n", output.Green("Added"), e.Local, e.Project, e.Remote, e.Version)
+				log.Infof("added %s → %s:%s  (v%d)", e.Local, e.Project, e.Remote, e.Version)
 			} else {
-				fmt.Fprintf(os.Stdout, "%s %s → %s:%s  (not yet pushed)\n", output.Green("Added"), e.Local, e.Project, e.Remote)
+				log.Infof("added %s → %s:%s  (not yet pushed)", e.Local, e.Project, e.Remote)
 			}
 		}
 
 		// Warn about large local files.
 		for _, e := range entries {
 			if info, err := os.Stat(e.Local); err == nil && info.Size() > 50*1024*1024 {
-				fmt.Fprintf(os.Stdout, "%s consider adding %s to .gitignore (%s)\n",
-					output.Yellow("Tip:"), e.Local, formatSizeMB(info.Size()))
+				log.Warnf("consider adding %s to .gitignore (%s)", e.Local, formatSizeMB(info.Size()))
 			}
 		}
 

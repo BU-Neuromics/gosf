@@ -9,6 +9,7 @@ import (
 
 	"github.com/BU-Neuromics/gosf/internal/client"
 	"github.com/BU-Neuromics/gosf/internal/config"
+	"github.com/BU-Neuromics/gosf/internal/log"
 	"github.com/BU-Neuromics/gosf/internal/output"
 	"github.com/BU-Neuromics/gosf/internal/resolver"
 )
@@ -69,7 +70,7 @@ Examples:
 			if jsonMode {
 				return output.PrintJSON(os.Stdout, result)
 			}
-			fmt.Fprintf(os.Stdout, "[dry-run] would move %s → %s\n", srcStr, destStr)
+			log.Infof("[dry-run] would move %s → %s", srcStr, destStr)
 			return nil
 		}
 
@@ -118,9 +119,7 @@ Examples:
 		if jsonMode {
 			return output.PrintJSON(os.Stdout, result)
 		}
-		if !flagQuiet {
-			fmt.Fprintf(os.Stdout, "Moved %s → %s\n", srcStr, destStr)
-		}
+		log.Infof("moved %s → %s", srcStr, destStr)
 		return nil
 	},
 }

@@ -220,14 +220,30 @@ gosf status                     # full: checks BEHIND / REMOTE_NEWER / DIVERGED
 | Flag | Description |
 |------|-------------|
 | `--token <tok>` | OSF token (overrides env/file/keychain) |
-| `--output json` | JSON to stdout; progress/color suppressed |
+| `--output json` | JSON to stdout; activity logging/color suppressed |
 | `--color auto\|always\|never` | Colorize output (default `auto`) |
-| `--quiet` / `-q` | Suppress progress bars and informational output |
+| `--verbose` / `-v` | Increase log verbosity (repeatable: `-v`/`-vv`/`-vvv`) |
+| `--progress-bar` / `-p` | Live progress bars for transfers (default: log lines) |
+| `--quiet` / `-q` | Errors only (conflicts with `-v`) |
 | `--version` | Print gosf version |
+
+## Output streams and logging
+
+`gosf` prints **results to stdout and activity to stderr**. stdout carries only
+the machine/result surface (`ls`/`status`/`versions`/`projects` tables,
+`info`/`set` fields, and all `--output=json` payloads); everything else — the
+remote-scan phase, per-file transfers, skips, and `add`/`init`/`cp`/`mv`/`mkdir`/
+`rm` confirmations — is a leveled activity log on stderr. Default level shows
+high-level activity; `-v`/`-vv`/`-vvv` add detail, `--quiet` drops to errors.
+Transfers log a one-line summary by default; pass `-p` for a live progress bar.
+
+**For agents:** parse stdout only (redirect `2>/dev/null` if activity noise is
+unwanted, or `2>run.log` to keep it). Prefer `--output=json`, which keeps stdout
+pure JSON and silences stderr logging unless `-v` is given.
 
 ## JSON output
 
-Every command supports `--output=json` (stdout; errors/progress on stderr). JSON
+Every command supports `--output=json` (stdout; errors/activity on stderr). JSON
 is never colorized. In `--output=json` mode, `gosf rm` and a bytes-writing
 `gosf push` both require an explicit flag (`--yes` / `--force`) — there is no
 prompt.

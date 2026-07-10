@@ -286,7 +286,7 @@ func pushFile(
 	}
 	log.Debugf("uploading %s → %s", entry.Local, uploadURL)
 
-	result, uploadErr := wb.Upload(ctx, localAbs, uploadURL, !showBar)
+	result, uploadErr := wb.Upload(ctx, localAbs, uploadURL, showBar)
 	if uploadErr != nil {
 		return "", false, fmt.Errorf("uploading %s: %w", entry.Local, uploadErr)
 	}
@@ -432,7 +432,7 @@ func downloadAndPin(
 		dlURL = client.RevisionURL(dlURL, revision)
 	}
 	log.Debugf("downloading %s (%s)", entry.Local, label)
-	if err := wb.Download(ctx, dlURL, localAbs, -1, !showBar); err != nil {
+	if err := wb.Download(ctx, dlURL, localAbs, -1, showBar); err != nil {
 		return "", false, fmt.Errorf("downloading %s: %w", entry.Local, err)
 	}
 

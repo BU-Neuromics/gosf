@@ -1,13 +1,13 @@
 package cmd
 
 import (
-	"fmt"
 	"os"
 
 	"github.com/spf13/cobra"
 
 	"github.com/BU-Neuromics/gosf/internal/client"
 	"github.com/BU-Neuromics/gosf/internal/config"
+	"github.com/BU-Neuromics/gosf/internal/log"
 	"github.com/BU-Neuromics/gosf/internal/output"
 	"github.com/BU-Neuromics/gosf/internal/resolver"
 )
@@ -33,9 +33,8 @@ Examples:
 		c := client.New(token)
 		res := resolver.New(c)
 
-		sp := output.NewSpinner("Listing…")
+		log.Infof("listing %s:%s", target.NodeID, target.Path)
 		items, err := res.ListDir(cmd.Context(), target.NodeID, target.Path)
-		sp.Stop()
 		if err != nil {
 			return friendlyAuthError(err)
 		}
@@ -48,9 +47,7 @@ Examples:
 		}
 
 		if len(items) == 0 {
-			if !flagQuiet {
-				fmt.Fprintln(os.Stderr, "(empty)")
-			}
+			log.Infof("(no files)")
 			return nil
 		}
 
