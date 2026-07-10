@@ -5,6 +5,40 @@ All notable changes to this project will be documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.7.0] - 2026-07-10
+
+### Added
+
+- **Leveled activity logging** (#59, #60). gosf now reports what it's doing as it
+  works — most visibly, `gosf sync`'s remote-scan phase prints `scanning remote
+  n/total` progress instead of appearing to hang. A repeatable `-v`/`--verbose`
+  flag raises verbosity: default shows high-level activity, `-v` adds per-item
+  detail, `-vv` adds HTTP traces (with timestamps + source), `-vvv` is maximum.
+  `--quiet` drops to errors only (and conflicts with `-v`). Logs are colorized
+  and written to stderr, built on the standard library's `log/slog`.
+
+### Changed
+
+- **Progress bars are now opt-in** (#59). The default for transfers is concise
+  log lines (`↑ pushed …`, `↓ pulled …`); pass `--progress-bar`/`-p` for the
+  classic live bar. Spinners for indeterminate waits are replaced by activity log
+  lines.
+- **stdout/stderr split** (#59, #60) — **potentially breaking for scripts.**
+  gosf now reserves **stdout for result data** (the `ls`/`status`/`versions`/
+  `projects` tables, `info`/`set` fields, `open`'s fallback URL, and every
+  `--output=json` payload) and routes **all activity to stderr**. Per-file
+  transfer summaries and the `add`/`init`/`cp`/`mv`/`mkdir`/`rm` confirmations
+  (e.g. `Created …`, `Added …`) moved from stdout to stderr logs; in text mode
+  those commands now print nothing to stdout. `--output=json` keeps stdout pure
+  JSON and silences stderr logging unless `-v` is passed. Scripts that parsed
+  human confirmations from stdout should read stderr or switch to `--output=json`.
+  (`gosf auth login`/`status`/`logout` keep their confirmation lines on stdout —
+  that text is the command's result.)
+
+### Removed
+
+- The `briandowns/spinner` dependency, replaced by activity logging (#60).
+
 ## [1.6.0] - 2026-07-09
 
 ### Added
