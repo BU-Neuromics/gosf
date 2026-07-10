@@ -715,6 +715,16 @@ func (s *Server) handleNewUpload(w http.ResponseWriter, r *http.Request) {
 	if parent != nil {
 		fullPath = parent.FilePath + "/" + name
 	}
+	// Real OSF rejects a create (kind=file) when a file of that name already
+	// exists in the folder with 409 Conflict — the caller must PUT a new version
+	// to the file's own upload link instead. Model that faithfully (#62).
+	if _, exists := proj.byPath[fullPath]; exists {
+		s.mu.Unlock()
+		writeJSON(w, http.StatusConflict, map[string]any{
+			"errors": []any{map[string]any{"detail": "Conflict"}},
+		})
+		return
+	}
 	s.nextID++
 	f := &File{
 		ID:       fmt.Sprintf("f%d", s.nextID),
