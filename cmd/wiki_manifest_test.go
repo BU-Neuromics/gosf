@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/md5"
 	"fmt"
+	"os"
 	"testing"
 
 	"github.com/BU-Neuromics/gosf/internal/client"
@@ -14,6 +15,19 @@ import (
 func md5of(s string) string {
 	h := md5.Sum([]byte(s))
 	return fmt.Sprintf("%x", h[:])
+}
+
+func writeFileHelper(path, content string) error {
+	return os.WriteFile(path, []byte(content), 0644)
+}
+
+func readFileHelper(t *testing.T, path string) string {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	return string(b)
 }
 
 func newWikiScanFixture(t *testing.T) (*fakeosf.Server, *client.OSFClient) {
