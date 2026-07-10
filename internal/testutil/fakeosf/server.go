@@ -121,8 +121,16 @@ type Server struct {
 	validToken string            // when set, /v2/users/me/ requires this exact bearer token
 	forbidden  map[string]bool   // node IDs that respond 403 (simulate private/no-access)
 	versionReq int               // count of GET /v2/files/{id}/versions/ requests
-	nextID     int
-	mu         sync.Mutex
+
+	wikis              map[string]*WikiPage // all wiki pages across projects, keyed by wiki ID
+	wikiOrder          map[string][]string  // per-project wiki IDs, most recently modified first
+	wikiDisabled       map[string]bool      // node IDs whose wiki addon is disabled
+	wikiDeletes        []string             // wiki IDs that received a DELETE request
+	wikiVersionReq     int                  // count of GET /v2/wikis/{id}/versions/ requests
+	wikiVersionContent int                  // count of GET /v2/wikis/{id}/versions/{n}/content/ requests
+
+	nextID int
+	mu     sync.Mutex
 }
 
 // SetForbidden makes node/file reads for nodeID respond 403, simulating a
@@ -160,8 +168,11 @@ func (s *Server) SetValidToken(token string) {
 // New creates and starts a new fake server.
 func New() *Server {
 	s := &Server{
-		projects: make(map[string]*fakeProject),
-		allFiles: make(map[string]*File),
+		projects:     make(map[string]*fakeProject),
+		allFiles:     make(map[string]*File),
+		wikis:        make(map[string]*WikiPage),
+		wikiOrder:    make(map[string][]string),
+		wikiDisabled: make(map[string]bool),
 	}
 	s.srv = httptest.NewServer(http.HandlerFunc(s.handler))
 	return s
@@ -354,6 +365,10 @@ func (s *Server) handler(w http.ResponseWriter, r *http.Request) {
 		s.handleUserNodes(w, r)
 	case r.Method == http.MethodGet && strings.HasPrefix(p, "/v2/nodes/") && strings.Contains(p, "/files/osfstorage/"):
 		s.handleFileList(w, r)
+	case strings.HasPrefix(p, "/v2/nodes/") && strings.HasSuffix(p, "/wikis/"):
+		s.handleNodeWikis(w, r)
+	case strings.HasPrefix(p, "/v2/wikis/"):
+		s.handleWiki(w, r)
 	case (r.Method == http.MethodGet || r.Method == http.MethodPatch) && strings.HasPrefix(p, "/v2/nodes/"):
 		if r.Method == http.MethodPatch {
 			s.handleNodePatch(w, r)

@@ -130,6 +130,63 @@ type InitResult struct {
 	Created bool   `json:"created"`
 }
 
+// WikiListItem describes one wiki page, emitted by `gosf wiki ls --output=json`.
+type WikiListItem struct {
+	ID           string `json:"id"`
+	Name         string `json:"name"`
+	Version      int    `json:"version"`
+	Size         int64  `json:"size"`
+	DateModified string `json:"date_modified"`
+}
+
+// WikiGetResult is emitted by `gosf wiki get --output=json`.
+type WikiGetResult struct {
+	Project string `json:"project"`
+	Page    string `json:"page"`
+	Version int    `json:"version"`
+	Size    int64  `json:"size"`
+	Content string `json:"content"`
+}
+
+// WikiPushResult is emitted by `gosf wiki push --output=json`.
+type WikiPushResult struct {
+	Project string `json:"project"`
+	Page    string `json:"page"`
+	Action  string `json:"action"` // create | update | skip
+	Version int    `json:"version"`
+	DryRun  bool   `json:"dry_run"`
+}
+
+// WikiRemoveResult is emitted by `gosf wiki rm --output=json`.
+type WikiRemoveResult struct {
+	Node   string `json:"node"`
+	Page   string `json:"page"`
+	DryRun bool   `json:"dry_run"`
+}
+
+// WikiMvResult is emitted by `gosf wiki mv --output=json`.
+type WikiMvResult struct {
+	Node   string `json:"node"`
+	From   string `json:"from"`
+	To     string `json:"to"`
+	DryRun bool   `json:"dry_run"`
+}
+
+// WikiAddEntry describes one wiki page staged by `gosf wiki add`.
+type WikiAddEntry struct {
+	Local   string `json:"local"`
+	Page    string `json:"page"`
+	Project string `json:"project"`
+	Version int    `json:"version"`
+	MD5     string `json:"md5"`
+}
+
+// WikiAddResult is emitted by `gosf wiki add --output=json`.
+type WikiAddResult struct {
+	Entries         []WikiAddEntry `json:"entries"`
+	ManifestCreated bool           `json:"manifest_created"`
+}
+
 // MkdirResult is emitted by `gosf mkdir --output=json`.
 type MkdirResult struct {
 	Path    string `json:"path"`
