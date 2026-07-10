@@ -175,3 +175,51 @@ func TestLive_ComponentPushNewVersion(t *testing.T) {
 		t.Error("expected a v2 in the component after re-push")
 	}
 }
+
+// TestLive_ListingCarriesCurrentVersion locks the assumption that the scan
+// speedup relies on: OSF's directory listing includes attributes.current_version
+// for each file, letting a scan learn the latest version number without a
+// separate /files/{id}/versions/ call. If OSF ever drops this field, the skip
+// fast path silently disables (falls back to fetching history), but this test
+// makes the divergence visible.
+func TestLive_ListingCarriesCurrentVersion(t *testing.T) {
+	e := requireLive(t)
+	dir := e.mkTempRemoteDir(e.project)
+
+	e.writeFile("cv.csv", "current-version-probe\n")
+	if _, stderr, code := e.runEventually("push", "cv.csv", e.project+":"+dir+"/cv.csv", "--quiet"); code != 0 {
+		t.Fatalf("push exit %d; stderr=%s", code, stderr)
+	}
+
+	var found bool
+	for i := 0; i < 40; i++ {
+		out, _, code := e.run("ls", e.project+":"+dir, "--output=json")
+		if code != 0 {
+			continue
+		}
+		var items []struct {
+			Attributes struct {
+				Name           string `json:"name"`
+				Kind           string `json:"kind"`
+				CurrentVersion int    `json:"current_version"`
+			} `json:"attributes"`
+		}
+		if json.Unmarshal([]byte(out), &items) != nil {
+			continue
+		}
+		for _, it := range items {
+			if it.Attributes.Kind == "file" && it.Attributes.Name == "cv.csv" {
+				if it.Attributes.CurrentVersion >= 1 {
+					found = true
+				}
+				break
+			}
+		}
+		if found {
+			break
+		}
+	}
+	if !found {
+		t.Error("OSF directory listing did not carry current_version>=1 for a pushed file; the scan skip optimization assumes it does")
+	}
+}

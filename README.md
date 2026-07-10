@@ -483,6 +483,7 @@ In JSON mode, `gosf rm` requires `--yes` (there is no interactive prompt).
 | `--color auto\|always\|never` | Colorize output (default `auto`: on only at a TTY, off under `--output=json`/`--quiet`/`NO_COLOR`) |
 | `--verbose`, `-v` | Increase log verbosity (repeatable: `-v` debug, `-vv` HTTP traces + timestamps, `-vvv` max) |
 | `--progress-bar`, `-p` | Show live progress bars for transfers (default: log lines) |
+| `--jobs`, `-j` | Files to scan against the remote concurrently on `sync`/`status` (default 8) |
 | `--quiet`, `-q` | Suppress progress and non-error output (logs drop to errors only; conflicts with `-v`) |
 | `--version` | Print the version |
 

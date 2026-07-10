@@ -120,6 +120,7 @@ type Server struct {
 	folders    []string          // folder paths created via kind=folder PUT
 	validToken string            // when set, /v2/users/me/ requires this exact bearer token
 	forbidden  map[string]bool   // node IDs that respond 403 (simulate private/no-access)
+	versionReq int               // count of GET /v2/files/{id}/versions/ requests
 	nextID     int
 	mu         sync.Mutex
 }
@@ -275,6 +276,15 @@ func (s *Server) Uploads() []UploadRecord {
 	return result
 }
 
+// VersionsRequests returns how many GET /v2/files/{id}/versions/ requests the
+// server has served. Lets a test assert that the scan skips the version-history
+// fetch when the directory listing already settles a file's classification.
+func (s *Server) VersionsRequests() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.versionReq
+}
+
 // Deletes returns the file IDs (from /v1/files/{id}/delete) that received a DELETE.
 func (s *Server) Deletes() []string {
 	s.mu.Lock()
@@ -386,10 +396,12 @@ func (s *Server) fileItemJSON(nodeID string, f *File) map[string]any {
 	}
 	size := int64(0)
 	md5Str := ""
+	currentVersion := 0
 	if !f.IsFolder && len(f.Versions) > 0 {
 		latest := f.Versions[len(f.Versions)-1]
 		size = int64(len(latest.content))
 		md5Str = latest.md5
+		currentVersion = latest.num
 	}
 	folderHref := ""
 	if f.IsFolder {
@@ -404,6 +416,7 @@ func (s *Server) fileItemJSON(nodeID string, f *File) map[string]any {
 			"date_modified":     "2024-01-01T00:00:00",
 			"date_created":      "2024-01-01T00:00:00",
 			"materialized_path": f.FilePath,
+			"current_version":   currentVersion,
 			"extra":             map[string]any{"hashes": map[string]any{"md5": md5Str}},
 		},
 		"links": s.itemLinks(nodeID, f),
@@ -543,6 +556,7 @@ func (s *Server) handleVersions(w http.ResponseWriter, r *http.Request) {
 	fileID := parts[2]
 
 	s.mu.Lock()
+	s.versionReq++
 	f, ok := s.allFiles[fileID]
 	s.mu.Unlock()
 	if !ok {

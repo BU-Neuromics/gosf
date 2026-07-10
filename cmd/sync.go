@@ -6,8 +6,10 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 
 	"github.com/spf13/cobra"
+	"golang.org/x/sync/errgroup"
 
 	"github.com/BU-Neuromics/gosf/internal/client"
 	"github.com/BU-Neuromics/gosf/internal/config"
@@ -22,7 +24,20 @@ var (
 	syncDryRun        bool
 	syncNoCheckRemote bool
 	syncResolve       string
+	syncJobs          int
 )
+
+// defaultScanJobs bounds how many manifest entries are classified against the
+// remote concurrently during a scan (sync/status pass 1).
+const defaultScanJobs = 8
+
+// scanConcurrency clamps a requested job count to a sane minimum of 1.
+func scanConcurrency(jobs int) int {
+	if jobs < 1 {
+		return 1
+	}
+	return jobs
+}
 
 var syncCmd = &cobra.Command{
 	Use:   "sync",
@@ -67,7 +82,9 @@ Examples:
 
 		osfClient := client.New(token)
 		wb := client.NewWaterbutler(token)
-		res := resolver.New(osfClient)
+		// Wrap the lister in a per-run cache so the many files that share
+		// directories don't each re-walk (and re-list) the same folders.
+		res := resolver.New(resolver.NewCachingLister(osfClient))
 
 		jsonMode := flagOutput == "json"
 		showBar := progressBarEnabled()
@@ -75,57 +92,53 @@ Examples:
 		jsonResults := make([]output.SyncItem, 0)
 		manifestChanged := false
 
-		// Pass 1: classify every entry (no transfers yet). This is the phase
-		// that used to run silently; log per-entry progress so a large manifest
-		// visibly makes headway instead of appearing stalled.
+		// Pass 1: classify every entry (no transfers yet), concurrently. This is
+		// the phase that used to run silently and serially; a bounded worker pool
+		// overlaps the OSF round-trips, and per-entry progress is logged so a
+		// large manifest visibly makes headway instead of appearing stalled.
 		total := len(m.Files)
-		plans := make([]entryPlan, 0, total)
+		plans := make([]entryPlan, total)
+		var scanned int64
+		g, gctx := errgroup.WithContext(cmd.Context())
+		g.SetLimit(scanConcurrency(syncJobs))
 		for i := range m.Files {
-			entry := &m.Files[i]
-			proj := entry.ResolveProject(m.Project.ID)
-			localAbs := filepath.Join(repoRoot, entry.Local)
+			i := i
+			g.Go(func() error {
+				entry := &m.Files[i]
+				proj := entry.ResolveProject(m.Project.ID)
+				localAbs := filepath.Join(repoRoot, entry.Local)
 
-			localMD5, err := computeLocalMD5(localAbs)
-			if err != nil {
-				return fmt.Errorf("computing MD5 for %s: %w", entry.Local, err)
-			}
-
-			isPushEligible := entry.Direction == "push" || entry.Direction == "both"
-			isPullEligible := entry.Direction == "pull" || entry.Direction == "both"
-
-			var remoteVersions []manifest.RemoteVersion
-			var resolvedItem *client.FileItem
-			// Resolve for content comparison (all entries when checking the
-			// remote) and to obtain a download URL (pull-eligible entries).
-			contactsRemote := !syncNoCheckRemote || isPullEligible
-			if contactsRemote {
-				log.Infof("scanning remote %d/%d  %s", i+1, total, entry.Local)
-				item, resolveErr := res.Resolve(cmd.Context(), proj, entry.Remote)
-				if resolveErr == nil {
-					resolvedItem = &item
-					log.Debugf("resolved %s → file %s", entry.Remote, item.ID)
-					if !syncNoCheckRemote {
-						fvs, fetchErr := osfClient.GetFileVersions(cmd.Context(), item.ID)
-						if fetchErr == nil {
-							remoteVersions = fileVersionsToRemote(fvs)
-							log.Debugf("%s: %d remote version(s)", entry.Local, len(remoteVersions))
-						} else {
-							log.Tracef("%s: versions fetch failed: %v", entry.Local, fetchErr)
-						}
-					}
-				} else {
-					log.Debugf("%s: not resolved on remote (%v)", entry.Remote, resolveErr)
+				localMD5, err := computeLocalMD5(localAbs)
+				if err != nil {
+					return fmt.Errorf("computing MD5 for %s: %w", entry.Local, err)
 				}
-			} else {
-				log.Debugf("classifying %d/%d  %s (no remote check)", i+1, total, entry.Local)
-			}
 
-			state := manifest.ClassifyFile(*entry, localMD5, remoteVersions, syncNoCheckRemote)
-			plans = append(plans, entryPlan{
-				entry: entry, proj: proj, localAbs: localAbs, localMD5: localMD5,
-				state: state, resolvedItem: resolvedItem, remoteVersions: remoteVersions,
-				treatAsPush: isPushEligible, treatAsPull: !isPushEligible && isPullEligible,
+				isPushEligible := entry.Direction == "push" || entry.Direction == "both"
+				isPullEligible := entry.Direction == "pull" || entry.Direction == "both"
+
+				var remoteVersions []manifest.RemoteVersion
+				var resolvedItem *client.FileItem
+				// Resolve for content comparison (all entries when checking the
+				// remote) and to obtain a download URL (pull-eligible entries).
+				contactsRemote := !syncNoCheckRemote || isPullEligible
+				if contactsRemote {
+					resolvedItem, remoteVersions = fetchRemoteState(gctx, res, osfClient, proj, *entry, localMD5, !syncNoCheckRemote)
+					log.Infof("scanned remote %d/%d  %s", atomic.AddInt64(&scanned, 1), total, entry.Local)
+				} else {
+					log.Debugf("classifying %d/%d  %s (no remote check)", atomic.AddInt64(&scanned, 1), total, entry.Local)
+				}
+
+				state := manifest.ClassifyFile(*entry, localMD5, remoteVersions, syncNoCheckRemote)
+				plans[i] = entryPlan{
+					entry: entry, proj: proj, localAbs: localAbs, localMD5: localMD5,
+					state: state, resolvedItem: resolvedItem, remoteVersions: remoteVersions,
+					treatAsPush: isPushEligible, treatAsPull: !isPushEligible && isPullEligible,
+				}
+				return nil
 			})
+		}
+		if err := g.Wait(); err != nil {
+			return err
 		}
 
 		// Pre-flight: refuse to transfer anything if any entry has diverged
@@ -470,5 +483,6 @@ func init() {
 	syncCmd.Flags().BoolVar(&syncDryRun, "dry-run", false, "Show what would happen without making changes")
 	syncCmd.Flags().BoolVar(&syncNoCheckRemote, "no-check-remote", false, "Skip remote version lookups (faster, cannot detect BEHIND/REMOTE_NEWER)")
 	syncCmd.Flags().StringVar(&syncResolve, "resolve", "", "Resolve divergence: 'ours' (keep local) or 'theirs' (keep remote)")
+	syncCmd.Flags().IntVarP(&syncJobs, "jobs", "j", defaultScanJobs, "Number of files to scan against the remote concurrently")
 	rootCmd.AddCommand(syncCmd)
 }
