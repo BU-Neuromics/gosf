@@ -212,15 +212,18 @@ func TestPull_DryRun(t *testing.T) {
 	env.srv.AddProject("abc12", "Test Project")
 	env.srv.AddFile("abc12", "/report.csv", []byte("data"))
 
-	stdout, _, code := env.run("pull", "abc12:/report.csv", "--dry-run")
+	stdout, stderr, code := env.run("pull", "abc12:/report.csv", "--dry-run")
 	if code != 0 {
 		t.Fatalf("exit %d", code)
 	}
 	if env.fileExists("report.csv") {
 		t.Fatal("dry-run should not create file")
 	}
-	if !strings.Contains(stdout, "report.csv") {
-		t.Errorf("expected filename in dry-run output; got %q", stdout)
+	if stdout != "" {
+		t.Errorf("text-mode dry-run should print nothing to stdout, got %q", stdout)
+	}
+	if !strings.Contains(stderr, "report.csv") {
+		t.Errorf("expected filename in dry-run activity on stderr; got %q", stderr)
 	}
 }
 
@@ -1145,8 +1148,8 @@ func TestLs_Empty(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit %d; stderr=%s", code, stderr)
 	}
-	if !strings.Contains(stderr, "empty") {
-		t.Errorf("expected '(empty)' message; got stderr=%q", stderr)
+	if !strings.Contains(stderr, "no files") {
+		t.Errorf("expected 'no files' message on stderr; got stderr=%q", stderr)
 	}
 }
 
@@ -1174,15 +1177,18 @@ func TestRm_DryRun(t *testing.T) {
 	env.srv.AddProject("abc12", "Test Project")
 	env.srv.AddFile("abc12", "/old.csv", []byte("stale"))
 
-	stdout, _, code := env.run("rm", "abc12:/old.csv", "--dry-run")
+	stdout, stderr, code := env.run("rm", "abc12:/old.csv", "--dry-run")
 	if code != 0 {
 		t.Fatalf("exit %d; stdout=%s", code, stdout)
 	}
 	if len(env.srv.Deletes()) != 0 {
 		t.Error("dry-run should not delete anything")
 	}
-	if !strings.Contains(stdout, "dry-run") {
-		t.Errorf("expected dry-run in output; got %q", stdout)
+	if stdout != "" {
+		t.Errorf("text-mode dry-run should print nothing to stdout, got %q", stdout)
+	}
+	if !strings.Contains(stderr, "dry-run") {
+		t.Errorf("expected dry-run in activity on stderr; got %q", stderr)
 	}
 }
 
@@ -2348,5 +2354,84 @@ func TestQuietVerboseConflict(t *testing.T) {
 	}
 	if !strings.Contains(stderr, "quiet") || !strings.Contains(stderr, "verbose") {
 		t.Errorf("error should name both flags, got:\n%s", stderr)
+	}
+}
+
+// ---- PR2 sweep: stdout/stderr contract across commands ----
+
+// A query command keeps its result on stdout and routes activity to stderr.
+func TestLs_ResultOnStdoutActivityOnStderr(t *testing.T) {
+	env := newTestEnv(t)
+	env.srv.AddProject("abc12", "Test Project")
+	env.srv.AddFile("abc12", "/data.csv", []byte("x"))
+
+	stdout, stderr, code := env.run("ls", "abc12")
+	if code != 0 {
+		t.Fatalf("exit %d; stderr=%s", code, stderr)
+	}
+	if !strings.Contains(stdout, "data.csv") {
+		t.Errorf("ls result (the table) must stay on stdout; got %q", stdout)
+	}
+	if !strings.Contains(stderr, "listing") {
+		t.Errorf("ls activity should be on stderr; got %q", stderr)
+	}
+	if strings.Contains(stdout, "listing") {
+		t.Errorf("activity must not leak onto stdout; got %q", stdout)
+	}
+}
+
+// A mutation command prints its confirmation to stderr (stdout empty in text mode).
+func TestMkdir_ConfirmationToStderr(t *testing.T) {
+	env := newTestEnv(t)
+	env.srv.AddProject("abc12", "Test Project")
+
+	stdout, stderr, code := env.run("mkdir", "abc12:/newdir")
+	if code != 0 {
+		t.Fatalf("exit %d; stderr=%s", code, stderr)
+	}
+	if stdout != "" {
+		t.Errorf("text-mode mkdir should print nothing to stdout, got %q", stdout)
+	}
+	if !strings.Contains(stderr, "created") {
+		t.Errorf("mkdir confirmation should be on stderr; got %q", stderr)
+	}
+}
+
+// Explicit-form push routes per-file transfer activity to stderr; stdout empty.
+func TestPush_ExplicitActivityToStderr(t *testing.T) {
+	env := newTestEnv(t)
+	env.srv.AddProject("abc12", "Test Project")
+	env.writeFile("data.csv", "hello")
+
+	stdout, stderr, code := env.run("push", "data.csv", "abc12:/data.csv")
+	if code != 0 {
+		t.Fatalf("exit %d; stderr=%s", code, stderr)
+	}
+	if len(env.srv.Uploads()) == 0 {
+		t.Fatal("expected an upload")
+	}
+	if stdout != "" {
+		t.Errorf("text-mode push should print nothing to stdout, got %q", stdout)
+	}
+	if !strings.Contains(stderr, "↑") {
+		t.Errorf("push activity should be logged on stderr; got %q", stderr)
+	}
+}
+
+// --output=json keeps stdout pure JSON and silences activity logging by default.
+func TestPush_JSONStdoutStaysPure(t *testing.T) {
+	env := newTestEnv(t)
+	env.srv.AddProject("abc12", "Test Project")
+	env.writeFile("data.csv", "hello")
+
+	stdout, stderr, code := env.run("push", "data.csv", "abc12:/data.csv", "--output=json")
+	if code != 0 {
+		t.Fatalf("exit %d; stderr=%s", code, stderr)
+	}
+	if !strings.HasPrefix(strings.TrimSpace(stdout), "{") {
+		t.Errorf("json stdout should be a pure JSON object; got %q", stdout)
+	}
+	if strings.Contains(stderr, "↑") || strings.Contains(stderr, "INFO") {
+		t.Errorf("json mode should silence activity logs by default; got stderr=%q", stderr)
 	}
 }

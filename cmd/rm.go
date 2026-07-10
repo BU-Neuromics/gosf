@@ -10,6 +10,7 @@ import (
 
 	"github.com/BU-Neuromics/gosf/internal/client"
 	"github.com/BU-Neuromics/gosf/internal/config"
+	"github.com/BU-Neuromics/gosf/internal/log"
 	"github.com/BU-Neuromics/gosf/internal/output"
 	"github.com/BU-Neuromics/gosf/internal/resolver"
 )
@@ -84,14 +85,14 @@ Examples:
 			if jsonMode {
 				return output.PrintJSON(os.Stdout, result)
 			}
-			fmt.Fprintf(os.Stdout, "[dry-run] would delete %s from project %s\n", label, target.NodeID)
+			log.Infof("[dry-run] would delete %s from project %s", label, target.NodeID)
 			return nil
 		}
 
 		// JSON mode already required --yes above; here handle interactive text mode.
 		if !rmYes {
 			if !confirm(fmt.Sprintf("Delete %s from project %s?", label, target.NodeID)) {
-				fmt.Fprintln(os.Stdout, "Aborted.")
+				log.Warnf("aborted")
 				return nil
 			}
 		}
@@ -104,9 +105,7 @@ Examples:
 		if jsonMode {
 			return output.PrintJSON(os.Stdout, result)
 		}
-		if !flagQuiet {
-			fmt.Fprintf(os.Stdout, "Deleted %s\n", target.Path)
-		}
+		log.Infof("deleted %s", target.Path)
 		return nil
 	},
 }

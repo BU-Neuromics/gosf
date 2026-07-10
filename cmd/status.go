@@ -9,6 +9,7 @@ import (
 
 	"github.com/BU-Neuromics/gosf/internal/client"
 	"github.com/BU-Neuromics/gosf/internal/config"
+	"github.com/BU-Neuromics/gosf/internal/log"
 	"github.com/BU-Neuromics/gosf/internal/manifest"
 	"github.com/BU-Neuromics/gosf/internal/output"
 	"github.com/BU-Neuromics/gosf/internal/resolver"
@@ -44,9 +45,8 @@ var statusCmd = &cobra.Command{
 		jsonItems := make([]output.StatusItem, 0)
 		var rows [][]output.Cell
 
-		var sp *output.Spinner
 		if !statusNoCheckRemote && !jsonMode {
-			sp = output.NewSpinner("Checking remote…")
+			log.Infof("checking remote")
 		}
 
 		for _, entry := range m.Files {
@@ -89,10 +89,6 @@ var statusCmd = &cobra.Command{
 					{Text: detail, Style: output.Dim},
 				})
 			}
-		}
-
-		if sp != nil {
-			sp.Stop()
 		}
 
 		if jsonMode {

@@ -9,6 +9,7 @@ import (
 
 	"github.com/BU-Neuromics/gosf/internal/client"
 	"github.com/BU-Neuromics/gosf/internal/config"
+	"github.com/BU-Neuromics/gosf/internal/log"
 	"github.com/BU-Neuromics/gosf/internal/output"
 	"github.com/BU-Neuromics/gosf/internal/resolver"
 )
@@ -55,7 +56,7 @@ Examples:
 			if jsonMode {
 				return output.PrintJSON(os.Stdout, result)
 			}
-			fmt.Fprintf(os.Stdout, "[dry-run] would create folder %s in project %s\n", folderPath, target.NodeID)
+			log.Infof("[dry-run] would create folder %s in project %s", folderPath, target.NodeID)
 			return nil
 		}
 
@@ -77,9 +78,7 @@ Examples:
 		if jsonMode {
 			return output.PrintJSON(os.Stdout, result)
 		}
-		if !flagQuiet {
-			fmt.Fprintf(os.Stdout, "Created %s\n", folderPath)
-		}
+		log.Infof("created %s", folderPath)
 		return nil
 	},
 }

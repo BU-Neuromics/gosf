@@ -8,6 +8,7 @@ import (
 
 	"github.com/BU-Neuromics/gosf/internal/client"
 	"github.com/BU-Neuromics/gosf/internal/config"
+	"github.com/BU-Neuromics/gosf/internal/log"
 	"github.com/BU-Neuromics/gosf/internal/output"
 )
 
@@ -25,9 +26,8 @@ Requires a valid token (set via 'gosf auth login', --token flag, or OSF_TOKEN).`
 		}
 
 		c := client.New(token)
-		sp := output.NewSpinner("Fetching projects…")
+		log.Infof("fetching projects")
 		nodes, err := c.GetUserNodes(cmd.Context())
-		sp.Stop()
 		if err != nil {
 			if apiErr, ok := err.(*client.APIError); ok && apiErr.StatusCode == 401 {
 				return fmt.Errorf("invalid token — run 'gosf auth login' to re-authenticate")
@@ -46,7 +46,7 @@ Requires a valid token (set via 'gosf auth login', --token flag, or OSF_TOKEN).`
 
 func printNodesTable(nodes []client.Node) {
 	if len(nodes) == 0 {
-		fmt.Fprintln(os.Stdout, "No projects found.")
+		log.Infof("no projects found")
 		return
 	}
 

@@ -11,6 +11,7 @@ import (
 
 	"github.com/BU-Neuromics/gosf/internal/client"
 	"github.com/BU-Neuromics/gosf/internal/config"
+	"github.com/BU-Neuromics/gosf/internal/log"
 	"github.com/BU-Neuromics/gosf/internal/manifest"
 	"github.com/BU-Neuromics/gosf/internal/output"
 	"github.com/BU-Neuromics/gosf/internal/resolver"
@@ -141,9 +142,8 @@ func runExplicitPull(cmd *cobra.Command, args []string, osfClient *client.OSFCli
 	}
 
 	res := resolver.New(osfClient)
-	sp := output.NewSpinner("Resolving…")
+	log.Infof("resolving %s:%s", target.NodeID, target.Path)
 	items, err := res.ListDir(cmd.Context(), target.NodeID, target.Path)
-	sp.Stop()
 	if err != nil {
 		return friendlyAuthError(err)
 	}
@@ -192,7 +192,6 @@ func runExplicitPull(cmd *cobra.Command, args []string, osfClient *client.OSFCli
 		wb:           wb,
 		result:       output.NewPullResult(pullDryRun),
 		jsonMode:     jsonMode,
-		quiet:        flagQuiet || jsonMode,
 		dryRun:       pullDryRun,
 		version:      pullVersion,
 		track:        !pullNoTrack,
@@ -241,8 +240,8 @@ func runExplicitPull(cmd *cobra.Command, args []string, osfClient *client.OSFCli
 	if jsonMode {
 		return output.PrintJSON(os.Stdout, s.result)
 	}
-	if len(s.result.Downloaded) == 0 && !flagQuiet {
-		fmt.Fprintln(os.Stderr, "Nothing to download (no files at that path).")
+	if len(s.result.Downloaded) == 0 {
+		log.Infof("nothing to download (no files at that path)")
 	}
 	return nil
 }
@@ -260,7 +259,6 @@ type pullSession struct {
 	wb           *client.WaterbutlerClient
 	result       *output.PullResult
 	jsonMode     bool
-	quiet        bool
 	dryRun       bool
 	version      int
 	track        bool
@@ -307,18 +305,13 @@ func (s *pullSession) file(item client.FileItem, destPath string) error {
 	if trackThis {
 		if conflict := trackedRemoteConflict(s.manifest, s.nodeID, remotePath, destPath); conflict != "" {
 			trackThis = false
-			if !s.quiet && !s.jsonMode {
-				fmt.Fprintf(os.Stderr, "note: %q is tracked as %q; downloading to %q without tracking\n",
-					remotePath, conflict, destPath)
-			}
+			log.Warnf("%q is tracked as %q; downloading to %q without tracking", remotePath, conflict, destPath)
 		}
 	}
 
 	if s.dryRun {
 		s.result.Add(destPath, item.Attributes.Size)
-		if !s.jsonMode {
-			fmt.Printf("[dry-run] would download → %s\n", destPath)
-		}
+		log.Infof("[dry-run] would download → %s", destPath)
 		return nil
 	}
 
@@ -327,9 +320,7 @@ func (s *pullSession) file(item client.FileItem, destPath string) error {
 	// version (item hashes describe the latest, not a requested revision).
 	identical := s.version == 0 && localFileMatches(destPath, item.Attributes.Extra.Hashes.MD5)
 	if identical {
-		if !s.quiet && !s.jsonMode {
-			fmt.Fprintf(os.Stderr, "%s  %s (identical, skipped)\n", output.Dim("≡"), destPath)
-		}
+		log.Infof("≡ %s (identical, skipped)", destPath)
 		s.result.Add(destPath, item.Attributes.Size)
 	} else {
 		if item.Links.Download == "" {
@@ -342,9 +333,10 @@ func (s *pullSession) file(item client.FileItem, destPath string) error {
 		if s.version > 0 {
 			dlURL = client.RevisionURL(dlURL, s.version)
 		}
-		if err := s.wb.Download(s.ctx, dlURL, destPath, item.Attributes.Size, s.quiet); err != nil {
+		if err := s.wb.Download(s.ctx, dlURL, destPath, item.Attributes.Size, progressBarEnabled()); err != nil {
 			return err
 		}
+		log.Infof("↓ %s", destPath)
 		s.result.Add(destPath, item.Attributes.Size)
 	}
 

@@ -8,6 +8,7 @@ import (
 
 	"github.com/BU-Neuromics/gosf/internal/client"
 	"github.com/BU-Neuromics/gosf/internal/config"
+	"github.com/BU-Neuromics/gosf/internal/log"
 	"github.com/BU-Neuromics/gosf/internal/output"
 	"github.com/BU-Neuromics/gosf/internal/resolver"
 )
@@ -37,19 +38,16 @@ Examples:
 		c := client.New(token)
 		res := resolver.New(c)
 
-		sp := output.NewSpinner("Fetching versions…")
+		log.Infof("fetching versions for %s", target.Path)
 		item, err := res.Resolve(cmd.Context(), target.NodeID, target.Path)
 		if err != nil {
-			sp.Stop()
 			return friendlyAuthError(err)
 		}
 		if item.Attributes.Kind == "folder" {
-			sp.Stop()
 			return fmt.Errorf("%q is a folder; versions only applies to files", target.Path)
 		}
 
 		versions, err := c.GetFileVersions(cmd.Context(), item.ID)
-		sp.Stop()
 		if err != nil {
 			return fmt.Errorf("fetching versions: %w", err)
 		}
@@ -68,7 +66,7 @@ Examples:
 		}
 
 		if len(versions) == 0 {
-			fmt.Fprintln(os.Stderr, "No versions found.")
+			log.Infof("no versions found")
 			return nil
 		}
 

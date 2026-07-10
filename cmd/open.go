@@ -9,6 +9,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/BU-Neuromics/gosf/internal/log"
 	"github.com/BU-Neuromics/gosf/internal/output"
 	"github.com/BU-Neuromics/gosf/internal/resolver"
 )
@@ -44,9 +45,7 @@ Examples:
 			return nil
 		}
 
-		if !flagQuiet {
-			fmt.Fprintln(os.Stderr, osfURL)
-		}
+		log.Infof("opened %s", osfURL)
 		return nil
 	},
 }
