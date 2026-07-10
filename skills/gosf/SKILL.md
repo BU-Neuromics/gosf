@@ -224,6 +224,7 @@ gosf status                     # full: checks BEHIND / REMOTE_NEWER / DIVERGED
 | `--color auto\|always\|never` | Colorize output (default `auto`) |
 | `--verbose` / `-v` | Increase log verbosity (repeatable: `-v`/`-vv`/`-vvv`) |
 | `--progress-bar` / `-p` | Live progress bars for transfers (default: log lines) |
+| `--jobs` / `-j` | Concurrent remote checks on `sync`/`status` (default 8) |
 | `--quiet` / `-q` | Errors only (conflicts with `-v`) |
 | `--version` | Print gosf version |
 
