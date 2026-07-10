@@ -11,7 +11,7 @@ import (
 
 	"github.com/BU-Neuromics/gosf/internal/client"
 	"github.com/BU-Neuromics/gosf/internal/config"
-	"github.com/BU-Neuromics/gosf/internal/output"
+	"github.com/BU-Neuromics/gosf/internal/log"
 )
 
 var authCmd = &cobra.Command{
@@ -50,9 +50,7 @@ func runLogin(ctx context.Context, noKeychain bool) error {
 	}
 
 	// Validate by calling the API.
-	if !flagQuiet {
-		fmt.Fprintln(os.Stderr, "Validating token…")
-	}
+	log.Infof("validating token")
 	c := client.New(token)
 	user, err := c.GetCurrentUser(ctx)
 	if err != nil {
@@ -135,8 +133,8 @@ var authLogoutCmd = &cobra.Command{
 		if err != nil {
 			return fmt.Errorf("removing token: %w", err)
 		}
-		if warning != "" && !flagQuiet {
-			fmt.Fprintln(os.Stderr, output.Yellow("warning:"), warning)
+		if warning != "" {
+			log.Warnf("%s", warning)
 		}
 		fmt.Fprintln(os.Stdout, "Logged out.")
 		return nil

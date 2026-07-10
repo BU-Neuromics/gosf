@@ -481,8 +481,26 @@ In JSON mode, `gosf rm` requires `--yes` (there is no interactive prompt).
 | `--token <token>` | Use this OSF token (overrides env/config/keychain) |
 | `--output text\|json` | Output format (default `text`) |
 | `--color auto\|always\|never` | Colorize output (default `auto`: on only at a TTY, off under `--output=json`/`--quiet`/`NO_COLOR`) |
-| `--quiet`, `-q` | Suppress progress and non-error output |
+| `--verbose`, `-v` | Increase log verbosity (repeatable: `-v` debug, `-vv` HTTP traces + timestamps, `-vvv` max) |
+| `--progress-bar`, `-p` | Show live progress bars for transfers (default: log lines) |
+| `--quiet`, `-q` | Suppress progress and non-error output (logs drop to errors only; conflicts with `-v`) |
 | `--version` | Print the version |
+
+## Logging and output streams
+
+`gosf` writes **results to stdout and activity to stderr**, so the two compose
+cleanly:
+
+- **stdout** — the machine/result surface: `ls`/`status`/`versions`/`projects`
+  tables, `info`/`set` fields, and every `--output=json` payload.
+- **stderr** — a leveled activity log (what the tool is doing): the remote-scan
+  phase, per-file transfers, skips, and mutation confirmations. Colorized on a
+  TTY; capture it separately with `2>run.log`.
+
+By default you see high-level activity (`INFO`); add `-v`/`-vv`/`-vvv` for more
+detail, or `--quiet` for errors only. Transfers show a one-line summary by
+default — pass `-p` for the classic live progress bar. In `--output=json` mode
+stdout stays pure JSON and activity logging is silenced unless you pass `-v`.
 
 ## Exit codes
 

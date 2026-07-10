@@ -1,11 +1,11 @@
 package cmd
 
 import (
-	"fmt"
 	"os"
 
 	"github.com/spf13/cobra"
 
+	"github.com/BU-Neuromics/gosf/internal/log"
 	"github.com/BU-Neuromics/gosf/internal/manifest"
 	"github.com/BU-Neuromics/gosf/internal/output"
 )
@@ -44,9 +44,9 @@ Examples:
 		}
 
 		if created {
-			fmt.Fprintf(os.Stdout, "Initialized gosf project %s (%s created)\n", projectID, path)
+			log.Infof("initialized gosf project %s (%s created)", projectID, path)
 		} else {
-			fmt.Fprintf(os.Stdout, "Updated project ID to %s in %s\n", projectID, path)
+			log.Infof("updated project ID to %s in %s", projectID, path)
 		}
 		return nil
 	},

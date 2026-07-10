@@ -109,11 +109,12 @@ gosf/
 │   ├── picker/
 │   │   ├── tree.go         # pure file-tree model (check/partial, collapse, flatten)
 │   │   └── picker.go       # bubbletea view over the tree (onboard file selection)
+│   ├── log/
+│   │   └── log.go          # leveled stderr logger (slog + custom human handler)
 │   └── output/
 │       ├── format.go       # human-readable vs --output=json
 │       ├── style.go        # color init + Green/Red/Yellow/Cyan/Bold/Dim helpers
-│       ├── table.go        # ANSI-safe aligned table renderer (Cell, RenderTable)
-│       └── spinner.go      # indeterminate-wait spinner (no-op off a TTY)
+│       └── table.go        # ANSI-safe aligned table renderer (Cell, RenderTable)
 ├── go.mod
 ├── .goreleaser.yaml
 ├── CLAUDE.md
@@ -122,11 +123,15 @@ gosf/
 
 ## Key UX requirements
 
-- Progress bars on pull/push (`schollz/progressbar`)
+- **Opt-in** progress bars on pull/push (`schollz/progressbar`) via
+  `--progress-bar`/`-p`; the default is log-style start/finish lines (see the
+  Logging section). `waterbutler.Upload/Download` take a `showProgress bool`
+  gated by `progressBarEnabled()`.
 - `--dry-run` on push, pull, rm
 - `--output=json` on all commands for scripting
 - `--conflict=skip|overwrite|rename` on push (default: skip)
-- `--quiet` suppresses progress/non-error output
+- `--quiet` suppresses progress/non-error output (drops logging to errors only)
+- `--verbose`/`-v` (repeatable) raises log verbosity; see the Logging section.
 - Proper non-zero exit codes on errors
 - **Update check** (`internal/update`): after each command, `update.MaybeNotify`
   prints a one-line "new release available" notice to stderr when the installed
@@ -136,8 +141,10 @@ gosf/
   non-TTY stderr, a `dev` build, a Ctrl-C'd run, and when `GOSF_NO_UPDATE_CHECK`
   is set. The gate (`shouldNotify`) and semver compare (`newerAvailable`) are
   pure/unit-tested; the checker's HTTP/cache/clock are injectable.
-- Colorized output (`fatih/color`) + spinners (`briandowns/spinner`) for
-  indeterminate waits. Color is resolved once in `root.go`'s `PersistentPreRunE`
+- Colorized output (`fatih/color`). Indeterminate waits no longer use a spinner;
+  they emit an INFO activity log line instead (the `briandowns/spinner` dependency
+  and `internal/output/spinner.go` were removed in the logging sweep). Color is
+  resolved once in `root.go`'s `PersistentPreRunE`
   via `output.InitColor`: on only when stdout is a TTY, forced off under
   `--output=json` (hard invariant — machine output is never colored), `--quiet`,
   and `NO_COLOR`. Global `--color=auto|always|never` overrides. All styling flows
@@ -168,6 +175,43 @@ JSON goes to stdout; progress bars are suppressed in JSON mode.
 | `push` | `{"uploaded": [{"path","action"}], "dry_run": bool}` where action ∈ upload\|overwrite\|rename\|skip |
 | `rm` | `{"node","path","kind","dry_run"}` — requires `--yes` (no interactive prompt in JSON mode) |
 | `versions` | `{"versions": [{"version","date_created","size","contributor"}]}` — `[]` when empty |
+
+### Logging and verbosity (`internal/log`)
+
+Activity/status is emitted through a leveled logger (`internal/log`, built on
+stdlib `log/slog` with a custom human handler) that writes **colorized lines to
+stderr** — stdout stays reserved for machine/result output (tables, `--output=json`,
+`open`'s URL, `info` fields). The verbosity ladder is a repeatable `-v/--verbose`
+count, resolved by the pure `resolveLevel(verbosity, quiet)`:
+
+| Flags     | Level  | Shows |
+|-----------|--------|-------|
+| (default) | INFO   | high-level activity ("scanning remote 12/50", "↑ pushed x v1→v2") + results |
+| `-v`      | DEBUG  | per-item detail (resolved IDs, upload URLs, version counts) |
+| `-vv`     | TRACE  | HTTP-level traces; also adds a timestamp + source location to every line |
+| `-vvv`    | TRACE2 | maximum detail |
+| `--quiet` | ERROR  | errors only (overrides verbosity; `--quiet -v` is rejected) |
+
+Custom slog levels `LevelTrace` (-8) and `LevelTrace2` (-12) extend the built-ins.
+Call sites use `log.Infof/Debugf/Warnf/Errorf/Tracef/Trace2f`. `log.Init` is called
+once in `root.go`'s `PersistentPreRunE`; `SetWriter` redirects to a buffer in tests.
+`--output=json` silences logs by default (so stderr stays clean for scripts) unless
+`-v` is passed — see the pure `logQuiet(quiet, jsonMode, verbosity)`.
+
+**Progress bars are opt-in** via `--progress-bar`/`-p`; the default is
+log-style start/finish lines. `showProgressBar(progressFlag, quiet, jsonMode,
+stderrTTY)` (pure) gates the live bar — only drawn when `-p` is set on an
+interactive, human (non-json/quiet) stderr. Waterbutler's `Upload`/`Download`
+take a `showProgress bool`; call sites pass `progressBarEnabled()`.
+
+Rollout: **complete across every command.** All activity/status/notice output —
+query-command spinners (now INFO log lines), the explicit-form `push`/`pull`
+streamers, and the `add`/`init`/`cp`/`mv`/`mkdir`/`rm` mutation confirmations —
+routes through `internal/log` on stderr. The stream contract is: **result data
+stays on stdout** (`ls`/`status`/`versions`/`projects` tables, `info`/`set` node
+fields, `open`'s fallback URL, and every `--output=json` payload) while
+**everything else is a stderr log**. `auth login`/`status`/`logout` keep their
+human confirmation lines on stdout (that text *is* the command's result).
 
 ### Cancellation
 

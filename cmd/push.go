@@ -11,6 +11,7 @@ import (
 
 	"github.com/BU-Neuromics/gosf/internal/client"
 	"github.com/BU-Neuromics/gosf/internal/config"
+	"github.com/BU-Neuromics/gosf/internal/log"
 	"github.com/BU-Neuromics/gosf/internal/manifest"
 	"github.com/BU-Neuromics/gosf/internal/output"
 	"github.com/BU-Neuromics/gosf/internal/resolver"
@@ -111,7 +112,6 @@ Examples:
 			wb:           client.NewWaterbutler(token),
 			result:       output.NewPushResult(pushDryRun),
 			jsonMode:     jsonMode,
-			quiet:        flagQuiet || jsonMode,
 			dryRun:       pushDryRun,
 			conflict:     pushConflict,
 			manifest:     mf,
@@ -138,8 +138,8 @@ Examples:
 		if jsonMode {
 			return output.PrintJSON(os.Stdout, s.result)
 		}
-		if len(s.result.Uploaded) == 0 && !flagQuiet {
-			fmt.Fprintln(os.Stderr, "Nothing to upload (no files at source).")
+		if len(s.result.Uploaded) == 0 {
+			log.Infof("nothing to upload (no files at source)")
 		}
 		return nil
 	},
@@ -230,7 +230,7 @@ func runBarePush(cmd *cobra.Command) error {
 			return fmt.Errorf("refusing to push without confirmation (no TTY); pass --yes to confirm or --force")
 		}
 		if !confirm("Proceed with push?") {
-			fmt.Fprintln(os.Stderr, "Aborted.")
+			log.Warnf("aborted")
 			return nil
 		}
 	} else if !quiet && !jsonMode {
@@ -240,7 +240,7 @@ func runBarePush(cmd *cobra.Command) error {
 
 	// Pass 2: execute.
 	for _, p := range plans {
-		action, changed, err := processPushEntry(cmd.Context(), p.entry, p.proj, p.localAbs, p.localMD5, p.state, res, wb, osfClient, quiet, jsonMode, pushDryRun, pushForce, pushResolve, p.remoteVersions)
+		action, changed, err := processPushEntry(cmd.Context(), p.entry, p.proj, p.localAbs, p.localMD5, p.state, res, wb, osfClient, progressBarEnabled(), pushDryRun, pushForce, pushResolve, p.remoteVersions)
 		if err != nil {
 			return err
 		}
@@ -296,7 +296,6 @@ type pushSession struct {
 	wb            *client.WaterbutlerClient
 	result        *output.PushResult
 	jsonMode      bool
-	quiet         bool
 	dryRun        bool
 	conflict      string
 	manifest      *manifest.Manifest
@@ -364,9 +363,7 @@ func (s *pushSession) file(srcPath, nodeID, destPath string) error {
 		localMD5, _ := computeLocalMD5(srcPath)
 		if redundantOverwrite(plan.action, localMD5, existingItem.Attributes.Extra.Hashes.MD5) {
 			s.result.Add(destFull, "skip")
-			if !s.jsonMode && !s.quiet {
-				fmt.Fprintf(os.Stderr, "%s  %s (identical, skipped)\n", output.Dim("≡"), destFull)
-			}
+			log.Infof("≡ %s (identical, skipped)", destFull)
 			return nil
 		}
 	}
@@ -374,26 +371,20 @@ func (s *pushSession) file(srcPath, nodeID, destPath string) error {
 	switch {
 	case plan.action == "skip":
 		s.result.Add(destFull, "skip")
-		if !s.jsonMode && !s.quiet {
-			fmt.Fprintf(os.Stderr, "%s  %s (already exists)\n", output.Dim("skip"), destFull)
-		}
+		log.Infof("skip %s (already exists)", destFull)
 		return nil
 	case s.dryRun:
 		s.result.Add(destFull, plan.action)
-		if !s.jsonMode {
-			fmt.Printf("[dry-run] would %s → %s\n", plan.action, destFull)
-		}
+		log.Infof("[dry-run] would %s → %s", plan.action, destFull)
 		return nil
 	}
 
-	if !s.quiet {
-		if plan.action == "overwrite" {
-			fmt.Fprintf(os.Stderr, "%s %s → %s (new version created)\n", output.Cyan("overwrite"), srcPath, destFull)
-		} else {
-			fmt.Fprintf(os.Stderr, "%s %s → %s\n", output.Green(plan.action), srcPath, destFull)
-		}
+	if plan.action == "overwrite" {
+		log.Infof("↑ %s → %s (new version)", srcPath, destFull)
+	} else {
+		log.Infof("↑ %s → %s (%s)", srcPath, destFull, plan.action)
 	}
-	uploadResult, err := s.wb.Upload(s.ctx, srcPath, plan.url, s.quiet)
+	uploadResult, err := s.wb.Upload(s.ctx, srcPath, plan.url, progressBarEnabled())
 	if err != nil {
 		return err
 	}
