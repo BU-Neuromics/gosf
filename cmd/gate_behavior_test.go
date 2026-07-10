@@ -15,7 +15,7 @@ func TestProcessPushEntry_PinOnly_RecordsPinNoTransfer(t *testing.T) {
 	entry := &manifest.Entry{Local: "a.csv", Remote: "/a.csv", Direction: "push", Version: 0}
 	versions := []manifest.RemoteVersion{{Version: 2, MD5: "aaa"}, {Version: 1, MD5: "bbb"}}
 	action, changed, err := processPushEntry(context.Background(), entry, "abc12", "/tmp/a.csv", "aaa",
-		manifest.StatePinOnly, nil, nil, nil, true, false, false, false, "", versions)
+		manifest.StatePinOnly, nil, nil, nil, false, false, false, "", versions)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -31,7 +31,7 @@ func TestProcessPushEntry_RollbackRefusedWithoutForce(t *testing.T) {
 	entry := &manifest.Entry{Local: "a.csv", Remote: "/a.csv", Direction: "push", Version: 1, MD5: "old"}
 	versions := []manifest.RemoteVersion{{Version: 2, MD5: "new"}, {Version: 1, MD5: "old"}}
 	_, changed, err := processPushEntry(context.Background(), entry, "abc12", "/tmp/a.csv", "old",
-		manifest.StateRemoteNewer, nil, nil, nil, true, false, false, false, "", versions)
+		manifest.StateRemoteNewer, nil, nil, nil, false, false, false, "", versions)
 	if err == nil {
 		t.Fatal("expected a rollback refusal without --force")
 	}
@@ -47,7 +47,7 @@ func TestProcessPushEntry_DivergedFailsHard(t *testing.T) {
 	entry := &manifest.Entry{Local: "a.csv", Remote: "/a.csv", Direction: "push", Version: 1, MD5: "B"}
 	versions := []manifest.RemoteVersion{{Version: 2, MD5: "R"}, {Version: 1, MD5: "B"}}
 	_, _, err := processPushEntry(context.Background(), entry, "abc12", "/tmp/a.csv", "L",
-		manifest.StateDivergent, nil, nil, nil, true, false, false, false, "", versions)
+		manifest.StateDivergent, nil, nil, nil, false, false, false, "", versions)
 	if err == nil || !strings.Contains(err.Error(), "divergence") {
 		t.Fatalf("expected a divergence error, got %v", err)
 	}
@@ -57,7 +57,7 @@ func TestProcessPullEntry_PinOnly_RecordsPinNoTransfer(t *testing.T) {
 	entry := &manifest.Entry{Local: "a.csv", Remote: "/a.csv", Direction: "pull", Version: 0}
 	versions := []manifest.RemoteVersion{{Version: 3, MD5: "ccc"}}
 	action, changed, err := processPullEntry(context.Background(), entry, "abc12", "/tmp/a.csv", "ccc",
-		manifest.StatePinOnly, nil, nil, nil, "", true, false, false, false, "", versions)
+		manifest.StatePinOnly, nil, nil, nil, "", false, false, false, "", versions)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -73,7 +73,7 @@ func TestProcessPullEntry_DivergedFailsHardWithoutResolve(t *testing.T) {
 	entry := &manifest.Entry{Local: "a.csv", Remote: "/a.csv", Direction: "pull", Version: 1, MD5: "B"}
 	versions := []manifest.RemoteVersion{{Version: 2, MD5: "R"}, {Version: 1, MD5: "B"}}
 	_, _, err := processPullEntry(context.Background(), entry, "abc12", "/tmp/a.csv", "L",
-		manifest.StateDivergent, nil, nil, nil, "", true, false, false, false, "", versions)
+		manifest.StateDivergent, nil, nil, nil, "", false, false, false, "", versions)
 	if err == nil || !strings.Contains(err.Error(), "divergence") {
 		t.Fatalf("expected a divergence error, got %v", err)
 	}

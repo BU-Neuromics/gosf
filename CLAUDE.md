@@ -169,6 +169,38 @@ JSON goes to stdout; progress bars are suppressed in JSON mode.
 | `rm` | `{"node","path","kind","dry_run"}` — requires `--yes` (no interactive prompt in JSON mode) |
 | `versions` | `{"versions": [{"version","date_created","size","contributor"}]}` — `[]` when empty |
 
+### Logging and verbosity (`internal/log`)
+
+Activity/status is emitted through a leveled logger (`internal/log`, built on
+stdlib `log/slog` with a custom human handler) that writes **colorized lines to
+stderr** — stdout stays reserved for machine/result output (tables, `--output=json`,
+`open`'s URL, `info` fields). The verbosity ladder is a repeatable `-v/--verbose`
+count, resolved by the pure `resolveLevel(verbosity, quiet)`:
+
+| Flags     | Level  | Shows |
+|-----------|--------|-------|
+| (default) | INFO   | high-level activity ("scanning remote 12/50", "↑ pushed x v1→v2") + results |
+| `-v`      | DEBUG  | per-item detail (resolved IDs, upload URLs, version counts) |
+| `-vv`     | TRACE  | HTTP-level traces; also adds a timestamp + source location to every line |
+| `-vvv`    | TRACE2 | maximum detail |
+| `--quiet` | ERROR  | errors only (overrides verbosity; `--quiet -v` is rejected) |
+
+Custom slog levels `LevelTrace` (-8) and `LevelTrace2` (-12) extend the built-ins.
+Call sites use `log.Infof/Debugf/Warnf/Errorf/Tracef/Trace2f`. `log.Init` is called
+once in `root.go`'s `PersistentPreRunE`; `SetWriter` redirects to a buffer in tests.
+`--output=json` silences logs by default (so stderr stays clean for scripts) unless
+`-v` is passed — see the pure `logQuiet(quiet, jsonMode, verbosity)`.
+
+**Progress bars are now opt-in** via `--progress-bar`/`-p`; the default is
+log-style start/finish lines. `showProgressBar(progressFlag, quiet, jsonMode,
+stderrTTY)` (pure) gates the live bar — only drawn when `-p` is set on an
+interactive, human (non-json/quiet) stderr. Waterbutler's `Upload`/`Download`
+still take a "suppress bar" bool; call sites pass `!progressBarEnabled()`.
+
+Status of the rollout: `sync` (plus the shared `processPushEntry`/`processPullEntry`
+helpers, so bare `push`/`pull` too) is converted. Remaining commands + the
+explicit-form `push`/`pull` streamers + spinner call sites are the PR2 sweep.
+
 ### Cancellation
 
 `Execute` installs a `signal.NotifyContext` (SIGINT/SIGTERM) and runs via

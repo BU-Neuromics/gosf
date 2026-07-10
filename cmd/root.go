@@ -10,8 +10,10 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
+	"golang.org/x/term"
 
 	"github.com/BU-Neuromics/gosf/internal/config"
+	"github.com/BU-Neuromics/gosf/internal/log"
 	"github.com/BU-Neuromics/gosf/internal/output"
 	"github.com/BU-Neuromics/gosf/internal/update"
 )
@@ -21,10 +23,12 @@ var version = "dev"
 
 // Global flag values shared across commands.
 var (
-	flagToken  string
-	flagOutput string
-	flagQuiet  bool
-	flagColor  string
+	flagToken    string
+	flagOutput   string
+	flagQuiet    bool
+	flagColor    string
+	flagVerbose  int
+	flagProgress bool
 )
 
 var rootCmd = &cobra.Command{
@@ -45,9 +49,41 @@ var rootCmd = &cobra.Command{
 		default:
 			return fmt.Errorf("--color must be 'auto', 'always', or 'never', got %q", flagColor)
 		}
+		if err := reconcileVerbosity(flagQuiet, flagVerbose); err != nil {
+			return err
+		}
 		output.InitColor(flagColor, flagOutput == "json", flagQuiet)
+		log.Init(flagVerbose, logQuiet(flagQuiet, flagOutput == "json", flagVerbose))
 		return nil
 	},
+}
+
+// reconcileVerbosity rejects contradictory verbosity flags. Pure/testable.
+func reconcileVerbosity(quiet bool, verbosity int) error {
+	if quiet && verbosity > 0 {
+		return fmt.Errorf("--quiet and --verbose cannot be combined")
+	}
+	return nil
+}
+
+// logQuiet reports whether activity logging should drop to errors-only. JSON
+// output silences logs by default (stdout stays pure JSON) unless the user
+// explicitly asked for verbosity. Pure/testable.
+func logQuiet(quiet, jsonMode bool, verbosity int) bool {
+	return quiet || (jsonMode && verbosity == 0)
+}
+
+// showProgressBar reports whether a live progress bar should be drawn. Bars are
+// opt-in via --progress-bar and only make sense on an interactive stderr with
+// human (non-JSON, non-quiet) output. Pure/testable.
+func showProgressBar(progressFlag, quiet, jsonMode, stderrTTY bool) bool {
+	return progressFlag && !quiet && !jsonMode && stderrTTY
+}
+
+// progressBarEnabled applies showProgressBar to the current global flag state.
+func progressBarEnabled() bool {
+	return showProgressBar(flagProgress, flagQuiet, flagOutput == "json",
+		term.IsTerminal(int(os.Stderr.Fd())))
 }
 
 // exitCodeError is an error that carries a specific exit code without printing
@@ -99,6 +135,8 @@ func init() {
 	rootCmd.PersistentFlags().StringVar(&flagOutput, "output", "text", "Output format: text or json")
 	rootCmd.PersistentFlags().BoolVarP(&flagQuiet, "quiet", "q", false, "Suppress progress and non-error output")
 	rootCmd.PersistentFlags().StringVar(&flagColor, "color", "auto", "Colorize output: auto, always, or never")
+	rootCmd.PersistentFlags().CountVarP(&flagVerbose, "verbose", "v", "Increase log verbosity (-v, -vv, -vvv)")
+	rootCmd.PersistentFlags().BoolVarP(&flagProgress, "progress-bar", "p", false, "Show live progress bars for transfers (default: log lines)")
 
 	// Bind OSF_TOKEN env var via viper so --token and OSF_TOKEN work the same way.
 	viper.SetEnvPrefix("OSF")
