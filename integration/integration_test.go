@@ -2506,3 +2506,74 @@ md5 = "%s"
 		t.Error("a file differing from remote latest must fetch version history")
 	}
 }
+
+// ---- #62: version=0 entry whose remote file already exists ----
+
+// A manifest entry pinned version=0 whose remote file already exists, with
+// DIFFERENT local content, must push a NEW VERSION (PUT to the file's upload
+// link) rather than blindly creating (which 409s). Regression for #62.
+func TestSync_UnpushedEntryRemoteExists_DiffersPushesNewVersion(t *testing.T) {
+	env := newTestEnv(t)
+	env.srv.AddProject("abc12", "Test Project")
+	env.srv.AddFolder("abc12", "/ml")
+	env.srv.AddFile("abc12", "/ml/plan.md", []byte("remote original"))
+
+	env.writeFile("ml/plan.md", "local changed content")
+	env.writeFile(".gosf/gosf.toml", `[project]
+id = "abc12"
+
+[[files]]
+local     = "ml/plan.md"
+remote    = "/ml/plan.md"
+direction = "push"
+version   = 0
+md5       = ""
+`)
+
+	stdout, stderr, code := env.run("sync")
+	if code != 0 {
+		t.Fatalf("sync should reconcile an existing remote, not 409; exit %d\nstdout=%s\nstderr=%s", code, stdout, stderr)
+	}
+	// A new version must have been created (upload happened).
+	if len(env.srv.Uploads()) == 0 {
+		t.Fatal("expected a new-version upload")
+	}
+	// Manifest is repaired to the new remote version (v2) with the new md5.
+	toml := env.readFile(".gosf/gosf.toml")
+	if !strings.Contains(toml, "version = 2") {
+		t.Errorf("expected version = 2 after new-version push; got:\n%s", toml)
+	}
+}
+
+// Same shape but local content already EQUALS the remote → PIN_ONLY: record the
+// pin, no transfer.
+func TestSync_UnpushedEntryRemoteExists_IdenticalPinsNoTransfer(t *testing.T) {
+	env := newTestEnv(t)
+	env.srv.AddProject("abc12", "Test Project")
+	env.srv.AddFolder("abc12", "/ml")
+	f := env.srv.AddFile("abc12", "/ml/plan.md", []byte("same bytes"))
+
+	env.writeFile("ml/plan.md", "same bytes")
+	env.writeFile(".gosf/gosf.toml", `[project]
+id = "abc12"
+
+[[files]]
+local     = "ml/plan.md"
+remote    = "/ml/plan.md"
+direction = "push"
+version   = 0
+md5       = ""
+`)
+
+	stdout, stderr, code := env.run("sync")
+	if code != 0 {
+		t.Fatalf("sync exit %d\nstdout=%s\nstderr=%s", code, stdout, stderr)
+	}
+	if len(env.srv.Uploads()) != 0 {
+		t.Errorf("identical content should not upload; got %d uploads", len(env.srv.Uploads()))
+	}
+	toml := env.readFile(".gosf/gosf.toml")
+	if !strings.Contains(toml, "version = 1") || !strings.Contains(toml, f.VersionMD5(1)) {
+		t.Errorf("expected pin to remote v1 (%s); got:\n%s", f.VersionMD5(1), toml)
+	}
+}

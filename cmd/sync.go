@@ -226,7 +226,7 @@ func processPushEntry(
 			log.Debugf("%s: not found locally, skipping", entry.Local)
 			return "skipped_not_found", false, nil
 		}
-		return pushFile(ctx, entry, proj, localAbs, 0, res, wb, showBar, dryRun)
+		return pushFile(ctx, entry, proj, localAbs, res, wb, showBar, dryRun)
 
 	case manifest.StatePinOnly:
 		// Local content already equals the remote — record the pin, no upload.
@@ -234,7 +234,7 @@ func processPushEntry(
 
 	case manifest.StateAheadOfManifest:
 		// Only local moved (L≠B, R=B) — a real update. Safe to push.
-		return pushFile(ctx, entry, proj, localAbs, entry.Version, res, wb, showBar, dryRun)
+		return pushFile(ctx, entry, proj, localAbs, res, wb, showBar, dryRun)
 
 	case manifest.StateRemoteNewer, manifest.StateBehind:
 		// Pushing here buries a newer/different remote version — a rollback.
@@ -245,11 +245,11 @@ func processPushEntry(
 					"pass --force to overwrite the remote deliberately",
 				entry.Local, latest.Version, entry.Version)
 		}
-		return pushFile(ctx, entry, proj, localAbs, entry.Version, res, wb, showBar, dryRun)
+		return pushFile(ctx, entry, proj, localAbs, res, wb, showBar, dryRun)
 
 	case manifest.StateDivergent:
 		if resolve == "ours" {
-			return pushFile(ctx, entry, proj, localAbs, entry.Version, res, wb, showBar, dryRun)
+			return pushFile(ctx, entry, proj, localAbs, res, wb, showBar, dryRun)
 		}
 		return "", false, divergenceError(*entry, proj, localMD5, remoteVersions)
 	}
@@ -271,34 +271,33 @@ func pinEntry(entry *manifest.Entry, remoteVersions []manifest.RemoteVersion, dr
 	return "pinned", true, nil
 }
 
-// pushFile resolves the upload URL and uploads the file, updating the entry.
+// pushFile uploads the local file and updates the entry. It chooses between
+// creating a new file and PUTting a new version by whether the remote file
+// actually exists — not by entry.Version. A version=0 entry whose remote file
+// already exists must update the existing file (create would 409); this is the
+// fix for #62. The (cached) resolver makes the existence check cheap: the scan
+// already listed the parent directory.
 func pushFile(
 	ctx context.Context,
 	entry *manifest.Entry,
 	proj, localAbs string,
-	currentVersion int,
 	res *resolver.Resolver,
 	wb *client.WaterbutlerClient,
 	showBar, dryRun bool,
 ) (action string, changed bool, err error) {
 	oldVer := entry.Version
 
+	uploadURL, remoteExists, err := uploadTarget(ctx, entry, proj, res)
+	if err != nil {
+		return "", false, fmt.Errorf("resolving upload URL for %s: %w", entry.Local, err)
+	}
+
 	if dryRun {
-		if currentVersion == 0 {
-			log.Infof("[dry-run] ↑ %s (first push → v1)", entry.Local)
-		} else {
-			log.Infof("[dry-run] ↑ %s v%d → v%d", entry.Local, oldVer, oldVer+1)
-		}
+		logPush(true, entry.Local, remoteExists, oldVer, oldVer+1)
 		return "push", false, nil
 	}
 
-	// Resolve the upload URL.
-	uploadURL, uploadErr := resolveUploadURL(ctx, entry, proj, res)
-	if uploadErr != nil {
-		return "", false, fmt.Errorf("resolving upload URL for %s: %w", entry.Local, uploadErr)
-	}
 	log.Debugf("uploading %s → %s", entry.Local, uploadURL)
-
 	result, uploadErr := wb.Upload(ctx, localAbs, uploadURL, showBar)
 	if uploadErr != nil {
 		return "", false, fmt.Errorf("uploading %s: %w", entry.Local, uploadErr)
@@ -308,36 +307,46 @@ func pushFile(
 	if newVer == 0 {
 		newVer = oldVer + 1
 	}
-
-	if currentVersion == 0 {
-		log.Infof("↑ pushed %s (first push → v%d)", entry.Local, newVer)
-	} else {
-		log.Infof("↑ pushed %s v%d → v%d", entry.Local, oldVer, newVer)
-	}
+	logPush(false, entry.Local, remoteExists, oldVer, newVer)
 
 	entry.Version = newVer
 	entry.MD5 = result.MD5
 	return "push", true, nil
 }
 
-// resolveUploadURL determines the correct Waterbutler upload URL for an entry.
-// For existing files it uses the file's own upload link; for new files it builds one.
-func resolveUploadURL(ctx context.Context, entry *manifest.Entry, proj string, res *resolver.Resolver) (string, error) {
-	if entry.Version > 0 {
-		// File exists on OSF — use its upload link for overwrite (creates new version).
-		item, err := res.Resolve(ctx, proj, entry.Remote)
-		if err == nil {
-			return item.Links.Upload, nil
-		}
+// logPush emits the per-file push activity line, distinguishing a first push
+// (no remote file) from a new version of an existing file, and noting when the
+// prior local pin was unknown (oldVer == 0 but the remote already existed).
+func logPush(dryRun bool, local string, remoteExists bool, oldVer, newVer int) {
+	prefix, verb := "", "pushed"
+	if dryRun {
+		prefix, verb = "[dry-run] ", "would push"
+	}
+	switch {
+	case !remoteExists:
+		log.Infof("%s↑ %s %s (first push → v%d)", prefix, verb, local, newVer)
+	case oldVer > 0:
+		log.Infof("%s↑ %s %s v%d → v%d", prefix, verb, local, oldVer, newVer)
+	default:
+		log.Infof("%s↑ %s %s (new version → v%d)", prefix, verb, local, newVer)
+	}
+}
+
+// uploadTarget returns the Waterbutler upload URL for an entry and whether the
+// remote file already exists. An existing file's own upload link creates a new
+// version on PUT; a new file uses the parent folder's ID-based create URL.
+func uploadTarget(ctx context.Context, entry *manifest.Entry, proj string, res *resolver.Resolver) (url string, remoteExists bool, err error) {
+	if item, rerr := res.Resolve(ctx, proj, entry.Remote); rerr == nil && item.Attributes.Kind == "file" {
+		return item.Links.Upload, true, nil
 	}
 	// New file — resolve the parent folder's ID-based upload base (or root).
 	parentDir := filepath.Dir(entry.Remote)
 	filename := filepath.Base(entry.Remote)
 	base, err := folderUploadBase(ctx, res, proj, parentDir)
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
-	return client.AppendUploadName(base, filename), nil
+	return client.AppendUploadName(base, filename), false, nil
 }
 
 // processPullEntry handles a pull-eligible entry. force authorizes overwriting
