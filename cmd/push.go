@@ -240,7 +240,7 @@ func runBarePush(cmd *cobra.Command) error {
 
 	// Pass 2: execute.
 	for _, p := range plans {
-		action, changed, err := processPushEntry(cmd.Context(), p.entry, p.proj, p.localAbs, p.localMD5, p.state, res, wb, osfClient, quiet, jsonMode, pushDryRun, pushForce, pushResolve, p.remoteVersions)
+		action, changed, err := processPushEntry(cmd.Context(), p.entry, p.proj, p.localAbs, p.localMD5, p.state, res, wb, osfClient, progressBarEnabled(), pushDryRun, pushForce, pushResolve, p.remoteVersions)
 		if err != nil {
 			return err
 		}

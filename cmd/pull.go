@@ -78,7 +78,6 @@ func runBarePull(ctx context.Context, osfClient *client.OSFClient, wb *client.Wa
 
 	res := resolver.New(osfClient)
 	jsonMode := flagOutput == "json"
-	quiet := flagQuiet || jsonMode
 	jsonResults := make([]output.SyncItem, 0)
 	manifestChanged := false
 
@@ -106,7 +105,7 @@ func runBarePull(ctx context.Context, osfClient *client.OSFClient, wb *client.Wa
 		}
 
 		state := manifest.ClassifyFile(*entry, localMD5, remoteVersions, false)
-		action, changed, err := processPullEntry(ctx, entry, proj, localAbs, localMD5, state, resolvedItem, wb, osfClient, repoRoot, quiet, jsonMode, pullDryRun, pullForce, pullResolve, remoteVersions)
+		action, changed, err := processPullEntry(ctx, entry, proj, localAbs, localMD5, state, resolvedItem, wb, osfClient, repoRoot, progressBarEnabled(), pullDryRun, pullForce, pullResolve, remoteVersions)
 		if err != nil {
 			return err
 		}

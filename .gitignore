@@ -1,3 +1,6 @@
 /gosf
 .env
 coverage/
+
+# Serena MCP local project cache
+.serena/

@@ -11,6 +11,7 @@ import (
 
 	"github.com/BU-Neuromics/gosf/internal/client"
 	"github.com/BU-Neuromics/gosf/internal/config"
+	"github.com/BU-Neuromics/gosf/internal/log"
 	"github.com/BU-Neuromics/gosf/internal/manifest"
 	"github.com/BU-Neuromics/gosf/internal/output"
 	"github.com/BU-Neuromics/gosf/internal/resolver"
@@ -69,13 +70,16 @@ Examples:
 		res := resolver.New(osfClient)
 
 		jsonMode := flagOutput == "json"
-		quiet := flagQuiet || jsonMode
+		showBar := progressBarEnabled()
 
 		jsonResults := make([]output.SyncItem, 0)
 		manifestChanged := false
 
-		// Pass 1: classify every entry (no transfers yet).
-		plans := make([]entryPlan, 0, len(m.Files))
+		// Pass 1: classify every entry (no transfers yet). This is the phase
+		// that used to run silently; log per-entry progress so a large manifest
+		// visibly makes headway instead of appearing stalled.
+		total := len(m.Files)
+		plans := make([]entryPlan, 0, total)
 		for i := range m.Files {
 			entry := &m.Files[i]
 			proj := entry.ResolveProject(m.Project.ID)
@@ -93,17 +97,27 @@ Examples:
 			var resolvedItem *client.FileItem
 			// Resolve for content comparison (all entries when checking the
 			// remote) and to obtain a download URL (pull-eligible entries).
-			if !syncNoCheckRemote || isPullEligible {
+			contactsRemote := !syncNoCheckRemote || isPullEligible
+			if contactsRemote {
+				log.Infof("scanning remote %d/%d  %s", i+1, total, entry.Local)
 				item, resolveErr := res.Resolve(cmd.Context(), proj, entry.Remote)
 				if resolveErr == nil {
 					resolvedItem = &item
+					log.Debugf("resolved %s → file %s", entry.Remote, item.ID)
 					if !syncNoCheckRemote {
 						fvs, fetchErr := osfClient.GetFileVersions(cmd.Context(), item.ID)
 						if fetchErr == nil {
 							remoteVersions = fileVersionsToRemote(fvs)
+							log.Debugf("%s: %d remote version(s)", entry.Local, len(remoteVersions))
+						} else {
+							log.Tracef("%s: versions fetch failed: %v", entry.Local, fetchErr)
 						}
 					}
+				} else {
+					log.Debugf("%s: not resolved on remote (%v)", entry.Remote, resolveErr)
 				}
+			} else {
+				log.Debugf("classifying %d/%d  %s (no remote check)", i+1, total, entry.Local)
 			}
 
 			state := manifest.ClassifyFile(*entry, localMD5, remoteVersions, syncNoCheckRemote)
@@ -138,9 +152,9 @@ Examples:
 			var perr error
 			switch {
 			case p.treatAsPush:
-				action, changed, perr = processPushEntry(cmd.Context(), p.entry, p.proj, p.localAbs, p.localMD5, p.state, res, wb, osfClient, quiet, jsonMode, syncDryRun, syncForce, syncResolve, p.remoteVersions)
+				action, changed, perr = processPushEntry(cmd.Context(), p.entry, p.proj, p.localAbs, p.localMD5, p.state, res, wb, osfClient, showBar, syncDryRun, syncForce, syncResolve, p.remoteVersions)
 			case p.treatAsPull:
-				action, changed, perr = processPullEntry(cmd.Context(), p.entry, p.proj, p.localAbs, p.localMD5, p.state, p.resolvedItem, wb, osfClient, repoRoot, quiet, jsonMode, syncDryRun, syncForce, syncResolve, p.remoteVersions)
+				action, changed, perr = processPullEntry(cmd.Context(), p.entry, p.proj, p.localAbs, p.localMD5, p.state, p.resolvedItem, wb, osfClient, repoRoot, showBar, syncDryRun, syncForce, syncResolve, p.remoteVersions)
 			default:
 				continue
 			}
@@ -172,7 +186,7 @@ Examples:
 // processPushEntry handles a push-eligible entry. Returns the action taken,
 // whether the manifest was mutated, and any error. force authorizes a
 // remote-newer/behind rollback; resolve="ours" resolves a divergence by taking
-// the local copy.
+// the local copy. showBar toggles the live transfer progress bar.
 func processPushEntry(
 	ctx context.Context,
 	entry *manifest.Entry,
@@ -181,39 +195,33 @@ func processPushEntry(
 	res *resolver.Resolver,
 	wb *client.WaterbutlerClient,
 	osfClient *client.OSFClient,
-	quiet, jsonMode, dryRun, force bool,
+	showBar, dryRun, force bool,
 	resolve string,
 	remoteVersions []manifest.RemoteVersion,
 ) (action string, changed bool, err error) {
 	switch state {
 	case manifest.StateInSync:
-		if !quiet {
-			fmt.Printf("%s  %s (v%d)\n", output.Green("✓"), entry.Local, entry.Version)
-		}
+		log.Debugf("in sync: %s (v%d)", entry.Local, entry.Version)
 		return "in_sync", false, nil
 
 	case manifest.StateMissing:
-		if !quiet {
-			fmt.Printf("%s  %s  missing locally, skipping\n", output.Red("✗"), entry.Local)
-		}
+		log.Warnf("%s: missing locally, skipping", entry.Local)
 		return "skipped_missing", false, nil
 
 	case manifest.StateNotPushed:
 		if _, statErr := os.Stat(localAbs); os.IsNotExist(statErr) {
-			if !quiet {
-				fmt.Printf("%s  %s  not found locally, skipping\n", output.Dim("·"), entry.Local)
-			}
+			log.Debugf("%s: not found locally, skipping", entry.Local)
 			return "skipped_not_found", false, nil
 		}
-		return pushFile(ctx, entry, proj, localAbs, 0, res, wb, quiet, jsonMode, dryRun)
+		return pushFile(ctx, entry, proj, localAbs, 0, res, wb, showBar, dryRun)
 
 	case manifest.StatePinOnly:
 		// Local content already equals the remote — record the pin, no upload.
-		return pinEntry(entry, remoteVersions, quiet, jsonMode, dryRun)
+		return pinEntry(entry, remoteVersions, dryRun)
 
 	case manifest.StateAheadOfManifest:
 		// Only local moved (L≠B, R=B) — a real update. Safe to push.
-		return pushFile(ctx, entry, proj, localAbs, entry.Version, res, wb, quiet, jsonMode, dryRun)
+		return pushFile(ctx, entry, proj, localAbs, entry.Version, res, wb, showBar, dryRun)
 
 	case manifest.StateRemoteNewer, manifest.StateBehind:
 		// Pushing here buries a newer/different remote version — a rollback.
@@ -224,11 +232,11 @@ func processPushEntry(
 					"pass --force to overwrite the remote deliberately",
 				entry.Local, latest.Version, entry.Version)
 		}
-		return pushFile(ctx, entry, proj, localAbs, entry.Version, res, wb, quiet, jsonMode, dryRun)
+		return pushFile(ctx, entry, proj, localAbs, entry.Version, res, wb, showBar, dryRun)
 
 	case manifest.StateDivergent:
 		if resolve == "ours" {
-			return pushFile(ctx, entry, proj, localAbs, entry.Version, res, wb, quiet, jsonMode, dryRun)
+			return pushFile(ctx, entry, proj, localAbs, entry.Version, res, wb, showBar, dryRun)
 		}
 		return "", false, divergenceError(*entry, proj, localMD5, remoteVersions)
 	}
@@ -238,19 +246,15 @@ func processPushEntry(
 // pinEntry records the latest remote version+MD5 into the manifest entry without
 // transferring any bytes (the PIN_ONLY state: local content already matches the
 // remote). Returns changed=true unless in dry-run mode.
-func pinEntry(entry *manifest.Entry, remoteVersions []manifest.RemoteVersion, quiet, jsonMode, dryRun bool) (string, bool, error) {
+func pinEntry(entry *manifest.Entry, remoteVersions []manifest.RemoteVersion, dryRun bool) (string, bool, error) {
 	latest := latestRemoteVersionInfo(remoteVersions)
 	if dryRun {
-		if !jsonMode {
-			fmt.Printf("[dry-run] %s  %s  identical to remote v%d, would pin\n", output.Dim("≡"), entry.Local, latest.Version)
-		}
+		log.Infof("[dry-run] %s: identical to remote v%d, would pin", entry.Local, latest.Version)
 		return "pin", false, nil
 	}
 	entry.Version = latest.Version
 	entry.MD5 = latest.MD5
-	if !quiet {
-		fmt.Printf("%s  %s  identical to remote v%d, pinned (no transfer)\n", output.Dim("≡"), entry.Local, latest.Version)
-	}
+	log.Infof("≡ %s: identical to remote v%d, pinned (no transfer)", entry.Local, latest.Version)
 	return "pinned", true, nil
 }
 
@@ -262,19 +266,15 @@ func pushFile(
 	currentVersion int,
 	res *resolver.Resolver,
 	wb *client.WaterbutlerClient,
-	quiet, jsonMode, dryRun bool,
+	showBar, dryRun bool,
 ) (action string, changed bool, err error) {
 	oldVer := entry.Version
 
 	if dryRun {
 		if currentVersion == 0 {
-			if !jsonMode {
-				fmt.Printf("[dry-run] %s  %s  (first push → v1)\n", output.Cyan("↑"), entry.Local)
-			}
+			log.Infof("[dry-run] ↑ %s (first push → v1)", entry.Local)
 		} else {
-			if !jsonMode {
-				fmt.Printf("[dry-run] %s  %s  v%d → v%d\n", output.Cyan("↑"), entry.Local, oldVer, oldVer+1)
-			}
+			log.Infof("[dry-run] ↑ %s v%d → v%d", entry.Local, oldVer, oldVer+1)
 		}
 		return "push", false, nil
 	}
@@ -284,8 +284,9 @@ func pushFile(
 	if uploadErr != nil {
 		return "", false, fmt.Errorf("resolving upload URL for %s: %w", entry.Local, uploadErr)
 	}
+	log.Debugf("uploading %s → %s", entry.Local, uploadURL)
 
-	result, uploadErr := wb.Upload(ctx, localAbs, uploadURL, quiet)
+	result, uploadErr := wb.Upload(ctx, localAbs, uploadURL, !showBar)
 	if uploadErr != nil {
 		return "", false, fmt.Errorf("uploading %s: %w", entry.Local, uploadErr)
 	}
@@ -296,13 +297,9 @@ func pushFile(
 	}
 
 	if currentVersion == 0 {
-		if !quiet {
-			fmt.Printf("%s  %s  (first push → v%d)\n", output.Cyan("↑"), entry.Local, newVer)
-		}
+		log.Infof("↑ pushed %s (first push → v%d)", entry.Local, newVer)
 	} else {
-		if !quiet {
-			fmt.Printf("%s  %s  v%d → v%d\n", output.Cyan("↑"), entry.Local, oldVer, newVer)
-		}
+		log.Infof("↑ pushed %s v%d → v%d", entry.Local, oldVer, newVer)
 	}
 
 	entry.Version = newVer
@@ -332,7 +329,7 @@ func resolveUploadURL(ctx context.Context, entry *manifest.Entry, proj string, r
 
 // processPullEntry handles a pull-eligible entry. force authorizes overwriting
 // locally-modified files; resolve="theirs" resolves a divergence by taking the
-// remote copy.
+// remote copy. showBar toggles the live transfer progress bar.
 func processPullEntry(
 	ctx context.Context,
 	entry *manifest.Entry,
@@ -342,20 +339,18 @@ func processPullEntry(
 	wb *client.WaterbutlerClient,
 	osfClient *client.OSFClient,
 	repoRoot string,
-	quiet, jsonMode, dryRun, force bool,
+	showBar, dryRun, force bool,
 	resolve string,
 	remoteVersions []manifest.RemoteVersion,
 ) (action string, changed bool, err error) {
 	switch state {
 	case manifest.StateInSync:
-		if !quiet {
-			fmt.Printf("%s  %s (v%d)\n", output.Green("✓"), entry.Local, entry.Version)
-		}
+		log.Debugf("in sync: %s (v%d)", entry.Local, entry.Version)
 		return "in_sync", false, nil
 
 	case manifest.StatePinOnly:
 		// Local content already equals the remote — record the pin, no download.
-		return pinEntry(entry, remoteVersions, quiet, jsonMode, dryRun)
+		return pinEntry(entry, remoteVersions, dryRun)
 
 	case manifest.StateMissing, manifest.StateBehind:
 		if resolvedItem == nil {
@@ -364,31 +359,27 @@ func processPullEntry(
 		// Restore the pinned baseline for pinned entries; for unpinned entries
 		// (no baseline) fetch the latest and pin to it.
 		if entry.Version > 0 {
-			return downloadAndPin(ctx, entry, resolvedItem, wb, localAbs, entry.Version, false, remoteVersions, quiet, jsonMode, dryRun, "pull")
+			return downloadAndPin(ctx, entry, resolvedItem, wb, localAbs, entry.Version, false, remoteVersions, showBar, dryRun, "pull")
 		}
-		return downloadAndPin(ctx, entry, resolvedItem, wb, localAbs, 0, true, remoteVersions, quiet, jsonMode, dryRun, "pull")
+		return downloadAndPin(ctx, entry, resolvedItem, wb, localAbs, 0, true, remoteVersions, showBar, dryRun, "pull")
 
 	case manifest.StateRemoteNewer:
 		// L == B and remote moved ahead — a safe fast-forward. Advance and re-pin.
 		if resolvedItem == nil {
 			return "skipped_unresolved", false, nil
 		}
-		return downloadAndPin(ctx, entry, resolvedItem, wb, localAbs, 0, true, remoteVersions, quiet, jsonMode, dryRun, "fast_forward")
+		return downloadAndPin(ctx, entry, resolvedItem, wb, localAbs, 0, true, remoteVersions, showBar, dryRun, "fast_forward")
 
 	case manifest.StateAheadOfManifest:
 		if !force {
-			if !quiet {
-				fmt.Printf("  %s  %s  locally modified, skipping.\n     Use --force to overwrite with the pinned version.\n", output.Yellow("~"), entry.Local)
-			}
+			log.Warnf("%s: locally modified, skipping (use --force to overwrite with the pinned version)", entry.Local)
 			return "skipped_modified", false, nil
 		}
 		if resolvedItem == nil {
 			return "skipped_unresolved", false, nil
 		}
-		if !quiet {
-			fmt.Fprintf(os.Stderr, "  %s  Overwriting locally modified file: %s\n", output.Yellow("!"), entry.Local)
-		}
-		return downloadAndPin(ctx, entry, resolvedItem, wb, localAbs, entry.Version, false, remoteVersions, quiet, jsonMode, dryRun, "pull_force")
+		log.Warnf("overwriting locally modified file: %s", entry.Local)
+		return downloadAndPin(ctx, entry, resolvedItem, wb, localAbs, entry.Version, false, remoteVersions, showBar, dryRun, "pull_force")
 
 	case manifest.StateDivergent:
 		if resolve != "theirs" {
@@ -397,15 +388,11 @@ func processPullEntry(
 		if resolvedItem == nil {
 			return "skipped_unresolved", false, nil
 		}
-		if !quiet {
-			fmt.Fprintf(os.Stderr, "  %s  Resolving divergence by taking remote: %s\n", output.Yellow("!"), entry.Local)
-		}
-		return downloadAndPin(ctx, entry, resolvedItem, wb, localAbs, 0, true, remoteVersions, quiet, jsonMode, dryRun, "pull_theirs")
+		log.Warnf("resolving divergence by taking remote: %s", entry.Local)
+		return downloadAndPin(ctx, entry, resolvedItem, wb, localAbs, 0, true, remoteVersions, showBar, dryRun, "pull_theirs")
 
 	case manifest.StateNotPushed:
-		if !quiet {
-			fmt.Printf("%s  %s  not yet pushed\n", output.Dim("·"), entry.Local)
-		}
+		log.Debugf("%s: not yet pushed", entry.Local)
 		return "skipped_not_pushed", false, nil
 	}
 	return "noop", false, nil
@@ -425,7 +412,7 @@ func downloadAndPin(
 	revision int,
 	toLatest bool,
 	remoteVersions []manifest.RemoteVersion,
-	quiet, jsonMode, dryRun bool,
+	showBar, dryRun bool,
 	action string,
 ) (string, bool, error) {
 	latest := latestRemoteVersionInfo(remoteVersions)
@@ -434,9 +421,7 @@ func downloadAndPin(
 		label = fmt.Sprintf("→ v%d", latest.Version)
 	}
 	if dryRun {
-		if !jsonMode {
-			fmt.Printf("[dry-run] %s  %s  (%s)\n", output.Cyan("↓"), entry.Local, label)
-		}
+		log.Infof("[dry-run] ↓ %s (%s)", entry.Local, label)
 		return action, false, nil
 	}
 	if err := os.MkdirAll(filepath.Dir(localAbs), 0755); err != nil {
@@ -446,7 +431,8 @@ func downloadAndPin(
 	if !toLatest && revision > 0 {
 		dlURL = client.RevisionURL(dlURL, revision)
 	}
-	if err := wb.Download(ctx, dlURL, localAbs, -1, quiet); err != nil {
+	log.Debugf("downloading %s (%s)", entry.Local, label)
+	if err := wb.Download(ctx, dlURL, localAbs, -1, !showBar); err != nil {
 		return "", false, fmt.Errorf("downloading %s: %w", entry.Local, err)
 	}
 
@@ -462,9 +448,7 @@ func downloadAndPin(
 		os.Remove(localAbs)
 		return "", false, fmt.Errorf("MD5 mismatch after downloading %s: expected %s, got %s", entry.Local, entry.MD5, gotMD5)
 	}
-	if !quiet {
-		fmt.Printf("%s  %s  (%s)\n", output.Cyan("↓"), entry.Local, label)
-	}
+	log.Infof("↓ pulled %s (%s)", entry.Local, label)
 	return action, true, nil
 }
 
