@@ -5,6 +5,29 @@ All notable changes to this project will be documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.8.0] - 2026-07-10
+
+### Changed
+
+- **Much faster `gosf sync` / `gosf status` remote scan** (#63). Classifying a
+  manifest against OSF was O(files × depth) sequential metadata calls; on large
+  manifests this took minutes. Three composing optimizations bring it down to
+  seconds: directory listings are memoized per run (files sharing a folder list
+  it once, not once each), the scan runs concurrently (new `--jobs`/`-j`, default
+  8), and per-file version history is skipped when the directory listing's latest
+  version already settles the classification (OSF reports `current_version` and
+  the latest MD5 in listings). The skip is proven to classify identically to
+  fetching the full history, and falls back to fetching it when needed.
+
+### Fixed
+
+- **`gosf sync` no longer 409s on a `version = 0` entry whose remote file already
+  exists** (#62). Such an entry now reconciles against the resolved remote —
+  recording the pin when content is identical (`PIN_ONLY`), or pushing a new
+  version when it differs — instead of blindly issuing a create that OSF rejects
+  with `409 Conflict`. The create-vs-update choice is now keyed on whether the
+  remote file exists, not on the manifest `version`.
+
 ## [1.7.0] - 2026-07-10
 
 ### Added
