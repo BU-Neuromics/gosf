@@ -126,6 +126,7 @@ type Server struct {
 	wikiOrder          map[string][]string  // per-project wiki IDs, most recently modified first
 	wikiDisabled       map[string]bool      // node IDs whose wiki addon is disabled
 	wikiDeletes        []string             // wiki IDs that received a DELETE request
+	wikiListReq        int                  // count of GET /v2/nodes/{id}/wikis/ requests
 	wikiVersionReq     int                  // count of GET /v2/wikis/{id}/versions/ requests
 	wikiVersionContent int                  // count of GET /v2/wikis/{id}/versions/{n}/content/ requests
 

@@ -115,6 +115,48 @@ var statusCmd = &cobra.Command{
 			}
 		}
 
+		// Classify wiki entries (serial — usually a handful; the listing cache
+		// collapses repeated per-project fetches).
+		if len(m.Wikis) > 0 {
+			wcache := newWikiScanCache(osfClient)
+			for _, we := range m.Wikis {
+				localAbs := filepath.Join(repoRoot, we.Local)
+				localMD5, err := computeLocalMD5(localAbs)
+				if err != nil {
+					return fmt.Errorf("computing MD5 for %s: %w", we.Local, err)
+				}
+				var remoteVersions []manifest.RemoteVersion
+				if !statusNoCheckRemote {
+					proj := we.ResolveProject(m.Project.ID)
+					_, remoteVersions, err = fetchWikiRemoteState(cmd.Context(), wcache, osfClient, proj, we, localMD5)
+					if err != nil {
+						return err
+					}
+				}
+				state := manifest.ClassifyFile(we.BaselineEntry(), localMD5, remoteVersions, statusNoCheckRemote)
+				if !statusIsInSync(state) {
+					allInSync = false
+				}
+				if jsonMode {
+					jsonItems = append(jsonItems, buildWikiStatusItem(we, state, remoteVersions))
+				} else {
+					statusStr, detail := stateDisplay(state, we.BaselineEntry(), remoteVersions)
+					if detail == "" {
+						detail = fmt.Sprintf("wiki %q", we.Page)
+					} else {
+						detail = fmt.Sprintf("wiki %q — %s", we.Page, detail)
+					}
+					rows = append(rows, []output.Cell{
+						{Text: we.Direction},
+						{Text: statusStr, Style: stateStyle(state)},
+						{Text: we.Local},
+						{Text: verLabel(we.Version)},
+						{Text: detail, Style: output.Dim},
+					})
+				}
+			}
+		}
+
 		if jsonMode {
 			if err := output.PrintJSON(os.Stdout, jsonItems); err != nil {
 				return err
@@ -204,6 +246,21 @@ func init() {
 func buildStatusItem(entry manifest.Entry, state manifest.FileState, remoteVersions []manifest.RemoteVersion) output.StatusItem {
 	item := output.StatusItem{
 		Path:            entry.Local,
+		Kind:            "file",
+		Direction:       entry.Direction,
+		State:           state.String(),
+		DeclaredVersion: entry.Version,
+	}
+	if len(remoteVersions) > 0 {
+		item.RemoteLatestVersion = latestRemoteVersion(remoteVersions)
+	}
+	return item
+}
+
+func buildWikiStatusItem(entry manifest.WikiEntry, state manifest.FileState, remoteVersions []manifest.RemoteVersion) output.StatusItem {
+	item := output.StatusItem{
+		Path:            entry.Local,
+		Kind:            "wiki",
 		Direction:       entry.Direction,
 		State:           state.String(),
 		DeclaredVersion: entry.Version,

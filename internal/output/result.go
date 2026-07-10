@@ -76,6 +76,7 @@ type AddResult struct {
 // StatusItem describes one manifest entry's state, emitted by `gosf status --output=json`.
 type StatusItem struct {
 	Path                string `json:"path"`
+	Kind                string `json:"kind"` // "file" or "wiki"
 	Direction           string `json:"direction"`
 	State               string `json:"state"`
 	DeclaredVersion     int    `json:"declared_version"`
@@ -85,6 +86,7 @@ type StatusItem struct {
 // SyncItem describes the action taken for one manifest entry, emitted by `gosf sync --output=json`.
 type SyncItem struct {
 	Path                string `json:"path"`
+	Kind                string `json:"kind"` // "file" or "wiki"
 	State               string `json:"state"`
 	DeclaredVersion     int    `json:"declared_version"`
 	RemoteLatestVersion int    `json:"remote_latest_version,omitempty"`

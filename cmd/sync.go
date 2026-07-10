@@ -477,6 +477,7 @@ func downloadAndPin(
 func makeSyncItem(entry *manifest.Entry, state manifest.FileState, action string, remoteVersions []manifest.RemoteVersion) output.SyncItem {
 	item := output.SyncItem{
 		Path:            entry.Local,
+		Kind:            "file",
 		State:           state.String(),
 		DeclaredVersion: entry.Version,
 		ActionTaken:     action,

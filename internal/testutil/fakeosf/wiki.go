@@ -85,6 +85,14 @@ func (s *Server) WikiDeletes() []string {
 	return append([]string(nil), s.wikiDeletes...)
 }
 
+// WikiListRequests returns how many GET /v2/nodes/{id}/wikis/ list requests the
+// server has received (used to assert scan memoization).
+func (s *Server) WikiListRequests() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.wikiListReq
+}
+
 // WikiVersionRequests returns how many GET /v2/wikis/{id}/versions/ list
 // requests the server has received.
 func (s *Server) WikiVersionRequests() int {
@@ -199,6 +207,7 @@ func (s *Server) handleNodeWikis(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
 		s.mu.Lock()
+		s.wikiListReq++
 		data := make([]map[string]any, 0)
 		for _, id := range s.wikiOrder[nodeID] {
 			data = append(data, s.wikiJSON(s.wikis[id]))

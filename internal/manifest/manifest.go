@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/pelletier/go-toml/v2"
 )
@@ -12,6 +13,7 @@ import (
 type Manifest struct {
 	Project ProjectConfig `toml:"project"`
 	Files   []Entry       `toml:"files"`
+	Wikis   []WikiEntry   `toml:"wikis,omitempty"`
 }
 
 // ProjectConfig holds the default project GUID.
@@ -36,6 +38,34 @@ func (e Entry) ResolveProject(defaultID string) string {
 		return e.Project
 	}
 	return defaultID
+}
+
+// WikiEntry describes one wiki page tracked by the manifest. It carries the
+// same pinned baseline as a file entry (version + md5), but the remote side is
+// a named wiki page rather than a storage path. The MD5 is computed by gosf
+// from the page content (OSF exposes no content hash for wiki versions).
+type WikiEntry struct {
+	Local     string `toml:"local"`
+	Page      string `toml:"page"`
+	Direction string `toml:"direction"`
+	Version   int    `toml:"version"`
+	MD5       string `toml:"md5"`
+	Project   string `toml:"project,omitempty"`
+}
+
+// ResolveProject returns the project GUID for this wiki entry.
+func (w WikiEntry) ResolveProject(defaultID string) string {
+	if w.Project != "" {
+		return w.Project
+	}
+	return defaultID
+}
+
+// BaselineEntry adapts the wiki entry's pinned baseline to the Entry shape so
+// it flows through ClassifyFile unchanged — the state machine only reads
+// Version and MD5.
+func (w WikiEntry) BaselineEntry() Entry {
+	return Entry{Version: w.Version, MD5: w.MD5}
 }
 
 // NotFoundError is returned by FindManifest when no .gosf/gosf.toml is found.
@@ -191,6 +221,56 @@ func validate(m *Manifest) error {
 			return fmt.Errorf("duplicate (project, remote) pair: project=%q remote=%q", proj, f.Remote)
 		}
 		seenRemote[key] = true
+	}
+
+	seenPage := make(map[string]bool) // key: "project|page"
+	for i, w := range m.Wikis {
+		if w.Direction == "" {
+			return fmt.Errorf("wikis[%d] (%q): direction is required", i, w.Local)
+		}
+		switch w.Direction {
+		case "push", "pull", "both":
+		default:
+			return fmt.Errorf("wikis[%d] (%q): direction %q is invalid (must be push, pull, or both)",
+				i, w.Local, w.Direction)
+		}
+
+		proj := w.ResolveProject(m.Project.ID)
+		if proj == "" {
+			return fmt.Errorf("wikis[%d] (%q): no project GUID — set [project].id or per-entry project field",
+				i, w.Local)
+		}
+
+		if err := validateWikiPageName(w.Page); err != nil {
+			return fmt.Errorf("wikis[%d] (%q): %w", i, w.Local, err)
+		}
+
+		// No duplicate local paths, across files and wikis alike.
+		if seenLocal[w.Local] {
+			return fmt.Errorf("duplicate local path %q in manifest", w.Local)
+		}
+		seenLocal[w.Local] = true
+
+		key := proj + "|" + w.Page
+		if seenPage[key] {
+			return fmt.Errorf("duplicate (project, page) pair: project=%q page=%q", proj, w.Page)
+		}
+		seenPage[key] = true
+	}
+	return nil
+}
+
+// validateWikiPageName enforces OSF's wiki page name rules: non-blank, no
+// forward slashes, at most 100 characters.
+func validateWikiPageName(page string) error {
+	if page == "" {
+		return fmt.Errorf("wiki page name cannot be blank")
+	}
+	if strings.Contains(page, "/") {
+		return fmt.Errorf("wiki page name %q cannot contain forward slashes", page)
+	}
+	if len(page) > 100 {
+		return fmt.Errorf("wiki page name cannot be longer than 100 characters")
 	}
 	return nil
 }
