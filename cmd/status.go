@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 
 	"github.com/spf13/cobra"
+	"golang.org/x/sync/errgroup"
 
 	"github.com/BU-Neuromics/gosf/internal/client"
 	"github.com/BU-Neuromics/gosf/internal/config"
@@ -15,7 +16,10 @@ import (
 	"github.com/BU-Neuromics/gosf/internal/resolver"
 )
 
-var statusNoCheckRemote bool
+var (
+	statusNoCheckRemote bool
+	statusJobs          int
+)
 
 var statusCmd = &cobra.Command{
 	Use:          "status",
@@ -37,7 +41,8 @@ var statusCmd = &cobra.Command{
 
 		token := config.LoadToken(flagToken)
 		osfClient := client.New(token)
-		res := resolver.New(osfClient)
+		// Per-run cache so files sharing directories don't each re-list them.
+		res := resolver.New(resolver.NewCachingLister(osfClient))
 
 		jsonMode := flagOutput == "json"
 		allInSync := true
@@ -49,43 +54,62 @@ var statusCmd = &cobra.Command{
 			log.Infof("checking remote")
 		}
 
-		for _, entry := range m.Files {
-			localAbs := filepath.Join(repoRoot, entry.Local)
-			localMD5, err := computeLocalMD5(localAbs)
-			if err != nil {
-				return fmt.Errorf("computing MD5 for %s: %w", entry.Local, err)
-			}
-
-			// Fetch remote versions even for unpinned (version=0) entries so an
-			// entry that is already byte-identical to the remote is reported as
-			// content-in-sync rather than a blanket "never pushed". Status is
-			// read-only: it reports, it never mutates the manifest.
-			var remoteVersions []manifest.RemoteVersion
-			if !statusNoCheckRemote {
-				proj := entry.ResolveProject(m.Project.ID)
-				item, resolveErr := res.Resolve(cmd.Context(), proj, entry.Remote)
-				if resolveErr == nil {
-					fvs, fetchErr := osfClient.GetFileVersions(cmd.Context(), item.ID)
-					if fetchErr == nil {
-						remoteVersions = fileVersionsToRemote(fvs)
-					}
+		// Classify each entry against the remote concurrently, then assemble
+		// output in manifest order. Status is read-only: it reports, never mutates.
+		type scanResult struct {
+			entry          manifest.Entry
+			state          manifest.FileState
+			remoteVersions []manifest.RemoteVersion
+		}
+		results := make([]scanResult, len(m.Files))
+		g, gctx := errgroup.WithContext(cmd.Context())
+		g.SetLimit(scanConcurrency(statusJobs))
+		for i := range m.Files {
+			i := i
+			g.Go(func() error {
+				entry := m.Files[i]
+				localAbs := filepath.Join(repoRoot, entry.Local)
+				localMD5, err := computeLocalMD5(localAbs)
+				if err != nil {
+					return fmt.Errorf("computing MD5 for %s: %w", entry.Local, err)
 				}
-			}
 
-			state := manifest.ClassifyFile(entry, localMD5, remoteVersions, statusNoCheckRemote)
-			if !statusIsInSync(state) {
+				// Fetch remote versions even for unpinned (version=0) entries so an
+				// entry that is already byte-identical to the remote is reported as
+				// content-in-sync rather than a blanket "never pushed". The scan
+				// skips the version history when the listing's latest already
+				// settles the classification (see fetchRemoteState).
+				var remoteVersions []manifest.RemoteVersion
+				if !statusNoCheckRemote {
+					proj := entry.ResolveProject(m.Project.ID)
+					_, remoteVersions = fetchRemoteState(gctx, res, osfClient, proj, entry, localMD5, true)
+				}
+
+				results[i] = scanResult{
+					entry:          entry,
+					state:          manifest.ClassifyFile(entry, localMD5, remoteVersions, statusNoCheckRemote),
+					remoteVersions: remoteVersions,
+				}
+				return nil
+			})
+		}
+		if err := g.Wait(); err != nil {
+			return err
+		}
+
+		for _, r := range results {
+			if !statusIsInSync(r.state) {
 				allInSync = false
 			}
-
 			if jsonMode {
-				jsonItems = append(jsonItems, buildStatusItem(entry, state, remoteVersions))
+				jsonItems = append(jsonItems, buildStatusItem(r.entry, r.state, r.remoteVersions))
 			} else {
-				statusStr, detail := stateDisplay(state, entry, remoteVersions)
+				statusStr, detail := stateDisplay(r.state, r.entry, r.remoteVersions)
 				rows = append(rows, []output.Cell{
-					{Text: entry.Direction},
-					{Text: statusStr, Style: stateStyle(state)},
-					{Text: entry.Local},
-					{Text: verLabel(entry.Version)},
+					{Text: r.entry.Direction},
+					{Text: statusStr, Style: stateStyle(r.state)},
+					{Text: r.entry.Local},
+					{Text: verLabel(r.entry.Version)},
 					{Text: detail, Style: output.Dim},
 				})
 			}
@@ -173,6 +197,7 @@ func verLabel(version int) string {
 
 func init() {
 	statusCmd.Flags().BoolVar(&statusNoCheckRemote, "no-check-remote", false, "Skip remote version lookups (faster, but cannot detect BEHIND or REMOTE_NEWER)")
+	statusCmd.Flags().IntVarP(&statusJobs, "jobs", "j", defaultScanJobs, "Number of files to check against the remote concurrently")
 	rootCmd.AddCommand(statusCmd)
 }
 

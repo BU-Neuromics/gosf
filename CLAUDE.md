@@ -96,7 +96,8 @@ gosf/
 │   │   ├── osf.go          # JSON:API metadata client
 │   │   └── waterbutler.go  # file transfer client; Upload returns UploadResult
 │   ├── resolver/
-│   │   └── path.go         # path string → Waterbutler URLs
+│   │   ├── path.go         # path string → Waterbutler URLs
+│   │   └── cache.go        # per-run memoizing FileLister (dedupes dir listings)
 │   ├── manifest/
 │   │   ├── manifest.go     # Load, Save, FindManifest, Entry, Manifest types
 │   │   └── status.go       # ClassifyFile, FileState, RemoteVersion
@@ -321,6 +322,29 @@ exists, so an already-identical file classifies as `PIN_ONLY` (not `NOT_PUSHED`)
 
 When `--no-check-remote`: only IN_SYNC, MISSING, AHEAD_OF_MANIFEST, NOT_PUSHED are
 possible (the remote-comparing states need network).
+
+### Scan performance (sync / status pass 1)
+
+Classifying a manifest against the remote is the dominant cost of `sync`/`status`
+(OSF's metadata API is ~1–3s per request). Three optimizations keep it fast:
+
+- **Memoized directory listings** — `resolver.NewCachingLister` wraps the client
+  for the duration of one command so the many files that share directories don't
+  each re-walk (and re-list) the same folders. `singleflight` collapses concurrent
+  identical fetches, so each unique listing hits the network exactly once.
+- **Bounded concurrency** — pass 1 classifies entries through an `errgroup` worker
+  pool (`--jobs`/`-j`, default `defaultScanJobs` = 8), overlapping round-trips.
+  Only classification is parallel; the pre-flight and transfer passes stay serial.
+- **Skip version history when the listing settles it** — OSF returns
+  `attributes.current_version` (latest number) and `attributes.extra.hashes.md5`
+  (latest MD5) in a directory listing. When local content equals the remote latest,
+  or a pinned entry's local still equals its baseline, classification cannot depend
+  on older versions, so `fetchRemoteState` skips the per-file `GetFileVersions`
+  call and synthesizes a latest-only `RemoteVersion`. The decision is the pure,
+  unit-tested `canSkipVersionHistory`; `TestCanSkipVersionHistory_EquivalentToFullHistory`
+  proves the synthetic slice classifies identically to the full history. The skip
+  requires `current_version > 0`; if OSF omits it, gosf falls back to fetching
+  history (`TestLive_ListingCarriesCurrentVersion` guards the assumption).
 
 ### State-based safety (gate matrix)
 

@@ -70,6 +70,11 @@ type FileAttributes struct {
 	DateCreated      string `json:"date_created"`
 	MaterializedPath string `json:"materialized_path"`
 	ContentType      string `json:"content_type"`
+	// CurrentVersion is the latest version number OSF reports for a file in a
+	// directory listing (attributes.current_version). It lets a scan learn the
+	// remote's latest version without a separate /files/{id}/versions/ call.
+	// 0 for folders or when the field is absent.
+	CurrentVersion int `json:"current_version"`
 	// Extra carries the content hashes OSF reports for files under
 	// attributes.extra.hashes. Folders report null hashes, which decode to
 	// empty strings; omitempty keeps them out of the JSON output.

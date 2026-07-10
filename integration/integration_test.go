@@ -2299,7 +2299,7 @@ func TestSync_ActivityGoesToStderrNotStdout(t *testing.T) {
 	if stdout != "" {
 		t.Errorf("text-mode sync should print nothing to stdout, got:\n%s", stdout)
 	}
-	if !strings.Contains(stderr, "scanning remote") {
+	if !strings.Contains(stderr, "scanned remote") {
 		t.Errorf("scan phase should report progress on stderr, got:\n%s", stderr)
 	}
 	if !strings.Contains(stderr, "pushed") {
@@ -2317,7 +2317,7 @@ func TestSync_QuietSuppressesActivity(t *testing.T) {
 	if stdout != "" {
 		t.Errorf("stdout should be empty under --quiet, got:\n%s", stdout)
 	}
-	for _, chatter := range []string{"scanning remote", "pushed"} {
+	for _, chatter := range []string{"scanned remote", "pushed"} {
 		if strings.Contains(stderr, chatter) {
 			t.Errorf("--quiet should suppress %q, got:\n%s", chatter, stderr)
 		}
@@ -2433,5 +2433,147 @@ func TestPush_JSONStdoutStaysPure(t *testing.T) {
 	}
 	if strings.Contains(stderr, "↑") || strings.Contains(stderr, "INFO") {
 		t.Errorf("json mode should silence activity logs by default; got stderr=%q", stderr)
+	}
+}
+
+// ---- Scan speedup: skip version history when the listing settles it ----
+
+// A status scan of files already in sync must NOT fetch per-file version
+// history — the directory listing's latest MD5 + current_version is enough.
+func TestStatus_SkipsVersionHistoryWhenInSync(t *testing.T) {
+	env := newTestEnv(t)
+	env.srv.AddProject("abc12", "Test Project")
+	f1 := env.srv.AddFile("abc12", "/a.csv", []byte("aaa"))
+	f2 := env.srv.AddFile("abc12", "/b.csv", []byte("bbb"))
+	env.writeFile("a.csv", "aaa")
+	env.writeFile("b.csv", "bbb")
+	env.writeFile(".gosf/gosf.toml", fmt.Sprintf(`[project]
+id = "abc12"
+
+[[files]]
+local = "a.csv"
+remote = "/a.csv"
+direction = "pull"
+version = 1
+md5 = "%s"
+
+[[files]]
+local = "b.csv"
+remote = "/b.csv"
+direction = "pull"
+version = 1
+md5 = "%s"
+`, f1.VersionMD5(1), f2.VersionMD5(1)))
+
+	_, stderr, code := env.run("status")
+	if code != 0 {
+		t.Fatalf("status exit %d; stderr=%s", code, stderr)
+	}
+	if got := env.srv.VersionsRequests(); got != 0 {
+		t.Errorf("in-sync files should skip version history; got %d versions requests", got)
+	}
+}
+
+// When local content differs from the remote latest, the scan must fall back to
+// fetching version history (to tell BEHIND from AHEAD/DIVERGED).
+func TestStatus_FetchesVersionHistoryWhenLocalDiffers(t *testing.T) {
+	env := newTestEnv(t)
+	env.srv.AddProject("abc12", "Test Project")
+	f := env.srv.AddFile("abc12", "/a.csv", []byte("v1"))
+	env.srv.AddVersion("abc12", "/a.csv", []byte("v2-latest"))
+	// Pinned at the LATEST (v2), but local content matches the OLDER v1. Local
+	// differs from both baseline and remote latest → BEHIND, which needs the
+	// version history to recognize "v1" as a known older version.
+	env.writeFile("a.csv", "v1")
+	env.writeFile(".gosf/gosf.toml", fmt.Sprintf(`[project]
+id = "abc12"
+
+[[files]]
+local = "a.csv"
+remote = "/a.csv"
+direction = "pull"
+version = 2
+md5 = "%s"
+`, f.VersionMD5(2)))
+
+	stdout, stderr, code := env.run("status")
+	// BEHIND → exit 1 (not in sync); that's expected, just check the scan.
+	_ = code
+	if !strings.Contains(stdout, "BEHIND") {
+		t.Errorf("expected BEHIND state; stdout=%q stderr=%q", stdout, stderr)
+	}
+	if got := env.srv.VersionsRequests(); got == 0 {
+		t.Error("a file differing from remote latest must fetch version history")
+	}
+}
+
+// ---- #62: version=0 entry whose remote file already exists ----
+
+// A manifest entry pinned version=0 whose remote file already exists, with
+// DIFFERENT local content, must push a NEW VERSION (PUT to the file's upload
+// link) rather than blindly creating (which 409s). Regression for #62.
+func TestSync_UnpushedEntryRemoteExists_DiffersPushesNewVersion(t *testing.T) {
+	env := newTestEnv(t)
+	env.srv.AddProject("abc12", "Test Project")
+	env.srv.AddFolder("abc12", "/ml")
+	env.srv.AddFile("abc12", "/ml/plan.md", []byte("remote original"))
+
+	env.writeFile("ml/plan.md", "local changed content")
+	env.writeFile(".gosf/gosf.toml", `[project]
+id = "abc12"
+
+[[files]]
+local     = "ml/plan.md"
+remote    = "/ml/plan.md"
+direction = "push"
+version   = 0
+md5       = ""
+`)
+
+	stdout, stderr, code := env.run("sync")
+	if code != 0 {
+		t.Fatalf("sync should reconcile an existing remote, not 409; exit %d\nstdout=%s\nstderr=%s", code, stdout, stderr)
+	}
+	// A new version must have been created (upload happened).
+	if len(env.srv.Uploads()) == 0 {
+		t.Fatal("expected a new-version upload")
+	}
+	// Manifest is repaired to the new remote version (v2) with the new md5.
+	toml := env.readFile(".gosf/gosf.toml")
+	if !strings.Contains(toml, "version = 2") {
+		t.Errorf("expected version = 2 after new-version push; got:\n%s", toml)
+	}
+}
+
+// Same shape but local content already EQUALS the remote → PIN_ONLY: record the
+// pin, no transfer.
+func TestSync_UnpushedEntryRemoteExists_IdenticalPinsNoTransfer(t *testing.T) {
+	env := newTestEnv(t)
+	env.srv.AddProject("abc12", "Test Project")
+	env.srv.AddFolder("abc12", "/ml")
+	f := env.srv.AddFile("abc12", "/ml/plan.md", []byte("same bytes"))
+
+	env.writeFile("ml/plan.md", "same bytes")
+	env.writeFile(".gosf/gosf.toml", `[project]
+id = "abc12"
+
+[[files]]
+local     = "ml/plan.md"
+remote    = "/ml/plan.md"
+direction = "push"
+version   = 0
+md5       = ""
+`)
+
+	stdout, stderr, code := env.run("sync")
+	if code != 0 {
+		t.Fatalf("sync exit %d\nstdout=%s\nstderr=%s", code, stdout, stderr)
+	}
+	if len(env.srv.Uploads()) != 0 {
+		t.Errorf("identical content should not upload; got %d uploads", len(env.srv.Uploads()))
+	}
+	toml := env.readFile(".gosf/gosf.toml")
+	if !strings.Contains(toml, "version = 1") || !strings.Contains(toml, f.VersionMD5(1)) {
+		t.Errorf("expected pin to remote v1 (%s); got:\n%s", f.VersionMD5(1), toml)
 	}
 }
