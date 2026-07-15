@@ -291,7 +291,7 @@ func (s *Server) handleWiki(w http.ResponseWriter, r *http.Request) {
 		s.handleWikiDetail(w, r, p)
 	case len(rest) == 1 && rest[0] == "content" && r.Method == http.MethodGet:
 		w.Header().Set("Content-Type", "text/markdown; charset=utf-8")
-		w.Write(p.LatestContent())
+		_, _ = w.Write(p.LatestContent())
 	case len(rest) == 1 && rest[0] == "versions":
 		s.handleWikiVersions(w, r, p)
 	case len(rest) >= 2 && rest[0] == "versions" && r.Method == http.MethodGet:
@@ -305,7 +305,7 @@ func (s *Server) handleWiki(w http.ResponseWriter, r *http.Request) {
 			s.wikiVersionContent++
 			s.mu.Unlock()
 			w.Header().Set("Content-Type", "text/markdown; charset=utf-8")
-			w.Write(p.Versions[num-1])
+			_, _ = w.Write(p.Versions[num-1])
 			return
 		}
 		s.mu.Lock()

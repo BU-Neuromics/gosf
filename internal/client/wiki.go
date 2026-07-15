@@ -85,12 +85,10 @@ func (v WikiVersion) Contributor() string {
 	return u.ID
 }
 
-// wikiDisabledDetail is the detail string OSF returns when a node's wiki addon
-// is disabled or deleted.
-const wikiDisabledDetail = "The wiki for this node has been disabled."
-
 // IsWikiDisabled reports whether err is the OSF 404 that signals the wiki
-// addon is disabled for the node (as opposed to a missing node or page).
+// addon is disabled for the node (as opposed to a missing node or page). The
+// match is on a substring of OSF's "The wiki for this node has been disabled."
+// detail, tolerating punctuation/casing drift.
 func IsWikiDisabled(err error) bool {
 	apiErr, ok := err.(*APIError)
 	return ok && apiErr.StatusCode == http.StatusNotFound &&
