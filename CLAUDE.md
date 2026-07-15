@@ -625,10 +625,11 @@ live suite is green.
   the binary via `-ldflags -X .../cmd.version=<version>`.
 - Validate the release config locally with `goreleaser check` and
   `goreleaser build --snapshot --clean --single-target`.
-- `golangci-lint` is **not** yet wired into CI: the default linter set flags
-  ~30 `errcheck` findings (mostly `fmt.Fprint*` to stdout/stderr and deferred
-  `Close()`). Adding it requires either addressing those or committing a tuned
-  `.golangci.yml` first — tracked as a follow-up.
+- `golangci-lint` **is** wired into CI (a required check, golangci-lint-action
+  v8 / lint v2.5.0, configured by `.golangci.yml`). Run it locally before pushing:
+  `golangci-lint run ./...` must print `0 issues`. `errcheck` is active, so check
+  or explicitly discard (`_, _ = w.Write(...)`) every returned error, and don't
+  leave unused symbols (`unused`).
 
 ---
 
