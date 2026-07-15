@@ -26,7 +26,20 @@ gosf open     <project>[:<path>]
 gosf add      <local-path> <project>:<remote-path>
 gosf status
 gosf sync
+gosf wiki ls       <project>
+gosf wiki get      <project>[:<page>] [dest]
+gosf wiki push     <src.md> <project>[:<page>]
+gosf wiki rm       <project>:<page>
+gosf wiki mv       <project>:<old> <new-name>
+gosf wiki versions <project>:<page>
+gosf wiki open     <project>[:<page>]
+gosf wiki add      <local.md> [<project>:]<page>
 ```
+
+Wiki page addressing: `<project>:<page-name>`. The part after the colon is a
+**wiki page name** (a flat namespace, not a path) and may contain spaces; where
+optional it defaults to `home`. Component addressing (`abc12/xyz34:page`) works
+as for files.
 
 Path convention: `abc12:/data/results/file.csv`
 - 5-char alphanumeric before the colon = OSF project/component GUID
@@ -68,6 +81,33 @@ Base: `https://files.osf.io`
 Path resolution: walk Tier 1 tree to resolve a path string to a Waterbutler URL.
 This is the core complexity — isolated in `internal/resolver/path.go`.
 
+### Wikis (Tier 1 only — no Waterbutler)
+
+OSF project wikis are versioned markdown pages served entirely from the metadata
+API. `internal/client/wiki.go`:
+
+- `GET /nodes/{id}/wikis/` — list pages (paginated, `-modified` order) → `ListWikis`
+- `GET /wikis/{wiki_id}/content/` — **plain text** latest content → `GetWikiContent`
+- `GET /wikis/{wiki_id}/versions/` — versions (type `wiki-versions`, `id` = integer number) → `GetWikiVersions`
+- `GET /wikis/{wiki_id}/versions/{n}/content/` — plain text of a version → `GetWikiVersionContent`
+- `POST /nodes/{id}/wikis/` `{data:{type:"wikis",attributes:{name,content}}}` → `CreateWiki`
+- `POST /wikis/{wiki_id}/versions/` `{data:{type:"wiki-versions",attributes:{content}}}` → `CreateWikiVersion`
+- `PATCH /wikis/{wiki_id}/` (rename) → `RenameWiki`; `DELETE /wikis/{wiki_id}/` → `DeleteWiki`
+
+Notes:
+- **No server-side content hash.** Wiki versions expose only integer identifiers
+  + size, so gosf computes MD5s itself from fetched content (pages are KB-scale).
+- Page names: ≤100 chars, no `/`, non-blank, unique per node. The `home` page
+  cannot be renamed or deleted — gosf refuses both client-side (`isHomeWiki`).
+- Wiki addon can be disabled per node → `404 "The wiki for this node has been
+  disabled."`, recognized by `client.IsWikiDisabled` and mapped to an actionable
+  message by `friendlyWikiError`.
+- Registrations are read-only via this API (create → 405). Reads work anonymously
+  on public projects.
+- Content is transferred **byte-exact** (no newline/encoding normalization),
+  hashed exactly like files; the live tier round-trips CRLF + missing-trailing-
+  newline content to guard the assumption.
+
 ## Project structure
 
 ```
@@ -87,6 +127,17 @@ gosf/
 │   ├── status.go            # gosf status — show manifest sync status
 │   ├── sync.go              # gosf sync — push/pull; processPushEntry/processPullEntry gates
 │   ├── onboard.go           # gosf onboard — guided setup (auth → project → pick files)
+│   ├── wiki.go              # gosf wiki command group + shared helpers (parseWikiTarget, findWikiPage, friendlyWikiError)
+│   ├── wiki_ls.go           # gosf wiki ls
+│   ├── wiki_get.go          # gosf wiki get (stdout/dest, --version)
+│   ├── wiki_versions.go     # gosf wiki versions
+│   ├── wiki_open.go         # gosf wiki open
+│   ├── wiki_push.go         # gosf wiki push (create/new-version, idempotent skip)
+│   ├── wiki_rm.go           # gosf wiki rm
+│   ├── wiki_mv.go           # gosf wiki mv (rename)
+│   ├── wiki_add.go          # gosf wiki add — [[wikis]] manifest entry
+│   ├── wiki_manifest.go     # fetchWikiRemoteState + wikiScanCache + canSkipWikiHistory (scan)
+│   ├── wiki_sync.go         # processWikiPushEntry/processWikiPullEntry, wikiEntryPlan, atomic write
 │   ├── gate.go              # state-based safety: divergenceError, entryPlan, push-plan helpers
 │   ├── prompt.go            # printPushPlan, confirmation/TTY helpers
 │   ├── auth_helpers.go      # friendlyAuthError (401/403 → auth hint)
@@ -94,6 +145,7 @@ gosf/
 ├── internal/
 │   ├── client/
 │   │   ├── osf.go          # JSON:API metadata client
+│   │   ├── wiki.go         # wiki API surface (List/Get/Create/Rename/Delete + IsWikiDisabled)
 │   │   └── waterbutler.go  # file transfer client; Upload returns UploadResult
 │   ├── resolver/
 │   │   ├── path.go         # path string → Waterbutler URLs
@@ -176,6 +228,14 @@ JSON goes to stdout; progress bars are suppressed in JSON mode.
 | `push` | `{"uploaded": [{"path","action"}], "dry_run": bool}` where action ∈ upload\|overwrite\|rename\|skip |
 | `rm` | `{"node","path","kind","dry_run"}` — requires `--yes` (no interactive prompt in JSON mode) |
 | `versions` | `{"versions": [{"version","date_created","size","contributor"}]}` — `[]` when empty |
+| `wiki ls` | array of `{id, name, version, size, date_modified}` (`[]` when empty) |
+| `wiki get` | `{project, page, version, size, content}` |
+| `wiki push` | `{project, page, action, version, dry_run}` — action ∈ create\|update\|skip |
+| `wiki rm` | `{node, page, dry_run}` — requires `--yes` (as `rm`) |
+| `wiki mv` | `{node, from, to, dry_run}` |
+| `wiki versions` | same shape as `versions` |
+| `wiki add` | `{entries: [{local, page, project, version, md5}], manifest_created}` |
+| `status`/`sync` items | each carries `"kind": "file"\|"wiki"` |
 
 ### Logging and verbosity (`internal/log`)
 
@@ -293,11 +353,36 @@ md5       = "d41d8cd98f00b204e9800998ecf8427e"  # MD5 of pinned version; "" if v
 project   = "xyz89"                 # optional per-entry override of [project].id
 ```
 
+Wiki pages are tracked with `[[wikis]]` entries, which mirror `[[files]]` but
+address a named wiki page instead of a storage path:
+
+```toml
+[[wikis]]
+local     = "docs/home.md"   # markdown file, relative to repo root
+page      = "home"           # wiki page name on OSF
+direction = "both"           # push | pull | both (required)
+version   = 3                # pinned wiki version identifier; 0 = not yet pushed
+md5       = "…"              # MD5 of the pinned version's content, computed by gosf
+project   = "xyz89"          # optional per-entry override
+```
+
 Validation on load:
-- `direction` must be present on every entry — missing = load error.
-- No duplicate `local` paths.
-- No duplicate `(project, remote)` pairs.
+- `direction` must be present on every file **and** wiki entry — missing = load error.
+- No duplicate `local` paths — **across `[[files]]` and `[[wikis]]` together**.
+- No duplicate `(project, remote)` pairs; no duplicate `(project, page)` pairs.
+- Wiki page names obey OSF rules (non-blank, no `/`, ≤100 chars).
 - Every entry must resolve a project (own field or `[project].id`).
+
+Wiki entries flow through the same `ClassifyFile` state machine and gate matrix
+via `WikiEntry.BaselineEntry()` (which exposes the pinned `version`+`md5` as an
+`Entry`). Remote versions for a wiki are built by `fetchWikiRemoteState`, which
+hashes fetched content: it fetches the latest once and skips older-version
+hashing when local matches latest or the pinned baseline (`canSkipWikiHistory`,
+the wiki analogue of `canSkipVersionHistory`), memoized per project by
+`wikiScanCache`. `gosf status`, `gosf sync`, and manifest-driven push/pull treat
+wiki entries as first-class rows; a wiki "transfer" is a metadata-API call
+(push = create page / new version; pull = atomic local file write via
+`writeFileAtomic`).
 
 ### File states
 
@@ -540,10 +625,11 @@ live suite is green.
   the binary via `-ldflags -X .../cmd.version=<version>`.
 - Validate the release config locally with `goreleaser check` and
   `goreleaser build --snapshot --clean --single-target`.
-- `golangci-lint` is **not** yet wired into CI: the default linter set flags
-  ~30 `errcheck` findings (mostly `fmt.Fprint*` to stdout/stderr and deferred
-  `Close()`). Adding it requires either addressing those or committing a tuned
-  `.golangci.yml` first — tracked as a follow-up.
+- `golangci-lint` **is** wired into CI (a required check, golangci-lint-action
+  v8 / lint v2.5.0, configured by `.golangci.yml`). Run it locally before pushing:
+  `golangci-lint run ./...` must print `0 issues`. `errcheck` is active, so check
+  or explicitly discard (`_, _ = w.Write(...)`) every returned error, and don't
+  leave unused symbols (`unused`).
 
 ---
 

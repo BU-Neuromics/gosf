@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **`gosf wiki` — OSF project wikis as first-class synced content** (#66). A new
+  command group manages the versioned markdown pages attached to a project:
+  - Read: `wiki ls`, `wiki get` (stdout by default, optional dest, `--version=n`,
+    byte-exact content), `wiki versions`, `wiki open`.
+  - Write: `wiki push` (create a page or mint a new version; skips identical
+    content), `wiki rm` (confirmation + `--yes` like `gosf rm`), `wiki mv`
+    (rename). The `home` page cannot be renamed or deleted (refused client-side).
+  - Sync: `wiki add` tracks a markdown file as a `[[wikis]]` manifest entry, and
+    `gosf status` / `gosf sync` / manifest-driven `push`/`pull` reconcile wiki
+    pages through the **same state machine and gate matrix as files** — pinned
+    baseline, `PIN_ONLY`, `REMOTE_NEWER`, `DIVERGED`, `--force`, and
+    `--resolve=ours|theirs`. Since OSF exposes no content hash for wiki versions,
+    gosf computes MD5s from the page content, fetching only what classification
+    needs. `status`/`sync` JSON items gain a `"kind": "file"|"wiki"` field.
+  - Reads work anonymously on public projects; a disabled wiki addon produces an
+    actionable message. The live tier round-trips CRLF and missing-trailing-
+    newline content to guard the byte-exact fidelity assumption.
+
 ## [1.8.0] - 2026-07-10
 
 ### Changed
