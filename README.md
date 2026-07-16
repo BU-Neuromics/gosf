@@ -442,8 +442,11 @@ $ gosf sync          # pushes/pulls the page per its direction and the gate matr
 
 Wiki entries live under `[[wikis]]` in the manifest and reconcile through the
 same pinned-baseline safety model as files (`PIN_ONLY`, `REMOTE_NEWER`,
-`DIVERGED`, `--force`, `--resolve=ours|theirs`). Content is transferred
-byte-for-byte.
+`DIVERGED`, `--force`, `--resolve=ours|theirs`). Note that OSF normalizes wiki
+content on save (CRLF line endings become LF and surrounding whitespace is
+trimmed), so gosf compares a canonical form rather than raw bytes — a local file
+that differs from the wiki only in line endings or a trailing newline still counts
+as in sync, and pushing it again is a no-op.
 
 ## Sync manifest (`.gosf/gosf.toml`)
 

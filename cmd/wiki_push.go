@@ -84,7 +84,7 @@ Examples:
 			if err != nil {
 				return friendlyWikiError(err, nodeID)
 			}
-			if bytes.Equal(remote, content) {
+			if bytes.Equal(client.CanonicalizeWikiContent(remote), client.CanonicalizeWikiContent(content)) {
 				result.Action = "skip"
 				result.Version = existing.Attributes.Extra.Version
 				log.Infof("≡ wiki page %q identical to remote v%d, skipping", result.Page, result.Version)

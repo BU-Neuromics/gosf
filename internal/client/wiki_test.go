@@ -363,6 +363,27 @@ func TestDeleteWiki_HomeRefused(t *testing.T) {
 	}
 }
 
+func TestCanonicalizeWikiContent(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"# Title\r\nline\n", "# Title\nline"}, // CRLF→LF + trailing newline trimmed
+		{"a\rb", "a\nb"},                       // lone CR→LF
+		{"  hi  ", "hi"},                       // surrounding whitespace trimmed
+		{"body\n\n\n", "body"},                 // trailing blank lines trimmed
+		{"keep  spaces  \nin middle\n", "keep  spaces  \nin middle"}, // interior whitespace kept
+		{"", ""},
+	}
+	for _, c := range cases {
+		got := string(CanonicalizeWikiContent([]byte(c.in)))
+		if got != c.want {
+			t.Errorf("CanonicalizeWikiContent(%q) = %q, want %q", c.in, got, c.want)
+		}
+		// Idempotent: canonicalizing again is a no-op (fixed point).
+		if again := string(CanonicalizeWikiContent([]byte(got))); again != got {
+			t.Errorf("not idempotent for %q: %q", c.in, again)
+		}
+	}
+}
+
 func TestWikiVersionNumber_NonNumericID(t *testing.T) {
 	v := WikiVersion{ID: "not-a-number"}
 	if got := v.Number(); got != 0 {

@@ -149,7 +149,7 @@ Examples:
 			we := &m.Wikis[i]
 			proj := we.ResolveProject(m.Project.ID)
 			localAbs := filepath.Join(repoRoot, we.Local)
-			localMD5, err := computeLocalMD5(localAbs)
+			localMD5, err := wikiLocalMD5(localAbs)
 			if err != nil {
 				return fmt.Errorf("computing MD5 for %s: %w", we.Local, err)
 			}

@@ -218,7 +218,7 @@ func pushWikiFile(
 	entry.Version = newVer
 	entry.MD5 = localMD5
 	if entry.MD5 == "" {
-		entry.MD5 = md5hex(content)
+		entry.MD5 = md5hex(client.CanonicalizeWikiContent(content))
 	}
 	return "push", true, nil
 }
@@ -267,7 +267,7 @@ func downloadWikiVersion(
 		return "", false, fmt.Errorf("writing %s: %w", entry.Local, err)
 	}
 
-	gotMD5 := md5hex(content)
+	gotMD5 := md5hex(client.CanonicalizeWikiContent(content))
 	if toLatest {
 		entry.Version = latest.Version
 		if latest.MD5 != "" {
