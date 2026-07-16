@@ -223,13 +223,32 @@ func (c *OSFClient) DeleteWiki(ctx context.Context, wikiID string) error {
 }
 
 // getText GETs a plain-text endpoint and returns the raw body bytes.
+//
+// The wiki content endpoints (/wikis/{id}/content/ and the per-version variant)
+// are served by OSF's PlainTextRenderer, whose media type is text/markdown. They
+// do NOT speak application/vnd.api+json — sending that Accept header (as the
+// JSON metadata calls do) yields a 406 Not Acceptable. So this request advertises
+// text/markdown explicitly, with a */* fallback.
 func (c *OSFClient) getText(ctx context.Context, url string) ([]byte, error) {
-	body, status, err := c.doGet(ctx, url)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err
 	}
-	if status < 200 || status >= 300 {
-		return nil, parseAPIError(status, body)
+	req.Header.Set("Accept", "text/markdown, */*")
+	if c.token != "" {
+		req.Header.Set("Authorization", "Bearer "+c.token)
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, parseAPIError(resp.StatusCode, body)
 	}
 	return body, nil
 }

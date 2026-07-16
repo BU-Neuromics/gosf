@@ -167,6 +167,26 @@ func (s *Server) wikiVersionJSON(p *WikiPage, num int) map[string]any {
 	}
 }
 
+// acceptsMarkdown reports whether the request's Accept header would accept
+// text/markdown, mirroring OSF's PlainTextRenderer (media_type text/markdown).
+// An absent Accept header is treated as "*/*". A JSON:API-only Accept (what the
+// metadata endpoints want) is rejected with 406, exactly as real OSF does — this
+// is what the fake previously failed to model.
+func acceptsMarkdown(r *http.Request) bool {
+	accept := strings.TrimSpace(r.Header.Get("Accept"))
+	if accept == "" {
+		return true
+	}
+	for _, part := range strings.Split(accept, ",") {
+		media := strings.TrimSpace(strings.SplitN(part, ";", 2)[0])
+		switch media {
+		case "text/markdown", "text/*", "*/*", "text/plain":
+			return true
+		}
+	}
+	return false
+}
+
 func wikiErrorJSON(w http.ResponseWriter, status int, detail string) {
 	writeJSON(w, status, map[string]any{
 		"errors": []map[string]any{{"detail": detail}},
@@ -290,6 +310,10 @@ func (s *Server) handleWiki(w http.ResponseWriter, r *http.Request) {
 	case len(rest) == 0:
 		s.handleWikiDetail(w, r, p)
 	case len(rest) == 1 && rest[0] == "content" && r.Method == http.MethodGet:
+		if !acceptsMarkdown(r) {
+			wikiErrorJSON(w, http.StatusNotAcceptable, "Could not satisfy the request Accept header.")
+			return
+		}
 		w.Header().Set("Content-Type", "text/markdown; charset=utf-8")
 		_, _ = w.Write(p.LatestContent())
 	case len(rest) == 1 && rest[0] == "versions":
@@ -301,6 +325,10 @@ func (s *Server) handleWiki(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if len(rest) == 3 && rest[2] == "content" {
+			if !acceptsMarkdown(r) {
+				wikiErrorJSON(w, http.StatusNotAcceptable, "Could not satisfy the request Accept header.")
+				return
+			}
 			s.mu.Lock()
 			s.wikiVersionContent++
 			s.mu.Unlock()

@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -93,10 +94,19 @@ func TestGetWikiContent_ByteExact(t *testing.T) {
 	// exactly, including trailing newline and CRLF.
 	content := "# Title\r\nline two\n\nno trailing newline"
 	var hadAuth bool
+	var gotAccept string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, hadAuth = r.Header["Authorization"]
+		gotAccept = r.Header.Get("Accept")
 		if r.URL.Path != "/wikis/w1/content/" {
 			t.Errorf("unexpected path: %s", r.URL.Path)
+		}
+		// Mirror OSF's PlainTextRenderer: the content endpoint only speaks
+		// text/markdown, so a JSON:API Accept header must 406 (the live bug).
+		if !acceptsText(gotAccept) {
+			w.WriteHeader(http.StatusNotAcceptable)
+			io.WriteString(w, `{"errors":[{"detail":"Not Acceptable"}]}`)
+			return
 		}
 		w.Header().Set("Content-Type", "text/markdown; charset=utf-8")
 		io.WriteString(w, content)
@@ -114,6 +124,25 @@ func TestGetWikiContent_ByteExact(t *testing.T) {
 	if hadAuth {
 		t.Error("Authorization header should be absent in unauthenticated mode")
 	}
+	if !acceptsText(gotAccept) {
+		t.Errorf("content request Accept = %q; must accept text/markdown (not the JSON:API type)", gotAccept)
+	}
+}
+
+// acceptsText reports whether an Accept header value would let OSF's
+// text/markdown PlainTextRenderer satisfy the request.
+func acceptsText(accept string) bool {
+	if accept == "" {
+		return true
+	}
+	for _, part := range strings.Split(accept, ",") {
+		media := strings.TrimSpace(strings.SplitN(part, ";", 2)[0])
+		switch media {
+		case "text/markdown", "text/plain", "text/*", "*/*":
+			return true
+		}
+	}
+	return false
 }
 
 func TestGetWikiContent_Error(t *testing.T) {
