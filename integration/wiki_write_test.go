@@ -8,11 +8,12 @@ import (
 	"testing"
 )
 
-func TestWikiPush_CreateAndRoundTrip(t *testing.T) {
+func TestWikiPush_CreateAndCanonicalRoundTrip(t *testing.T) {
 	e := newTestEnv(t)
 	e.srv.AddProject("abc12", "Wiki Project")
-	content := "# Protocol\r\nstep one\n\nno trailing newline"
-	e.writeFile("Protocol.md", content)
+	// Push content with CRLF and a trailing newline. OSF (and the fake) store the
+	// canonical form; gosf compares canonically, so this is what round-trips.
+	e.writeFile("Protocol.md", "# Protocol\r\nstep one\n\nno trailing newline\n")
 
 	stdout, stderr, code := e.run("wiki", "push", "Protocol.md", "abc12", "--output=json")
 	if code != 0 {
@@ -32,13 +33,25 @@ func TestWikiPush_CreateAndRoundTrip(t *testing.T) {
 		t.Errorf("result = %+v", r)
 	}
 
-	// Round-trip: the stored content is byte-identical.
+	// Stored content is the canonical form (CRLF→LF, surrounding whitespace trimmed).
 	p := e.srv.GetWiki("abc12", "Protocol")
 	if p == nil {
 		t.Fatal("page not created on server")
 	}
-	if string(p.LatestContent()) != content {
-		t.Errorf("stored content = %q, want %q", p.LatestContent(), content)
+	want := "# Protocol\nstep one\n\nno trailing newline"
+	if string(p.LatestContent()) != want {
+		t.Errorf("stored content = %q, want canonical %q", p.LatestContent(), want)
+	}
+
+	// Re-pushing the same file is idempotent despite the CRLF/trailing-newline
+	// difference from what OSF stored — the canonical forms match.
+	stdout, _, code = e.run("wiki", "push", "Protocol.md", "abc12", "--output=json")
+	if code != 0 {
+		t.Fatalf("second push exit %d", code)
+	}
+	json.Unmarshal([]byte(stdout), &r)
+	if r.Action != "skip" {
+		t.Errorf("idempotent re-push action = %q, want skip", r.Action)
 	}
 }
 
@@ -61,7 +74,7 @@ func TestWikiPush_UpdateAndIdempotentSkip(t *testing.T) {
 	if r.Action != "update" || r.Version != 2 {
 		t.Errorf("result = %+v", r)
 	}
-	if got := string(e.srv.GetWiki("abc12", "home").LatestContent()); got != "new\n" {
+	if got := string(e.srv.GetWiki("abc12", "home").LatestContent()); got != "new" {
 		t.Errorf("stored = %q", got)
 	}
 

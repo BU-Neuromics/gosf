@@ -104,9 +104,20 @@ Notes:
   message by `friendlyWikiError`.
 - Registrations are read-only via this API (create → 405). Reads work anonymously
   on public projects.
-- Content is transferred **byte-exact** (no newline/encoding normalization),
-  hashed exactly like files; the live tier round-trips CRLF + missing-trailing-
-  newline content to guard the assumption.
+- **Content is canonicalized, not byte-exact.** OSF normalizes wiki content on
+  write — CRLF→LF and surrounding whitespace trimmed (its DRF content field is
+  `trim_whitespace=True`) — so a byte-exact round trip is impossible. gosf hashes
+  and compares a **canonical form** (`client.CanonicalizeWikiContent`: CRLF/CR→LF,
+  `TrimSpace`) applied to *both* local and remote content, so idempotent pushes and
+  sync classification are stable regardless of OSF's exact rule. Wiki local MD5s use
+  `wikiLocalMD5`/`wikiContentMD5` (canonical), not the raw-bytes `computeLocalMD5`
+  used for storage files. `fakeosf` independently reproduces OSF's normalization
+  (`osfNormalizeContent`) so the hermetic tiers catch regressions; the live tier
+  asserts the canonical round trip + idempotency (`TestLive_WikiCanonicalRoundTrip`).
+- **Wiki content endpoints speak `text/markdown`, not JSON:API.** `GET
+  /wikis/{id}/content/` (and the per-version variant) are served by OSF's
+  `PlainTextRenderer`, so `getText` sends `Accept: text/markdown, */*` — sending the
+  JSON:API Accept (as the metadata calls do) returns 406 Not Acceptable.
 
 ## Project structure
 

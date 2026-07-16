@@ -11,8 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **`gosf wiki` — OSF project wikis as first-class synced content** (#66). A new
   command group manages the versioned markdown pages attached to a project:
-  - Read: `wiki ls`, `wiki get` (stdout by default, optional dest, `--version=n`,
-    byte-exact content), `wiki versions`, `wiki open`.
+  - Read: `wiki ls`, `wiki get` (stdout by default, optional dest, `--version=n`),
+    `wiki versions`, `wiki open`.
   - Write: `wiki push` (create a page or mint a new version; skips identical
     content), `wiki rm` (confirmation + `--yes` like `gosf rm`), `wiki mv`
     (rename). The `home` page cannot be renamed or deleted (refused client-side).
@@ -24,8 +24,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     gosf computes MD5s from the page content, fetching only what classification
     needs. `status`/`sync` JSON items gain a `"kind": "file"|"wiki"` field.
   - Reads work anonymously on public projects; a disabled wiki addon produces an
-    actionable message. The live tier round-trips CRLF and missing-trailing-
-    newline content to guard the byte-exact fidelity assumption.
+    actionable message. OSF normalizes wiki content on save (CRLF→LF, surrounding
+    whitespace trimmed) and serves content as `text/markdown`, so gosf sends the
+    right `Accept` header and compares a **canonical** form (not raw bytes) — a
+    local file differing only in line endings or a trailing newline still counts
+    as in sync, and re-pushing it is a no-op. The live tier asserts the canonical
+    round trip and idempotency.
 
 ## [1.8.0] - 2026-07-10
 

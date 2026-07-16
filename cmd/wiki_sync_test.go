@@ -94,8 +94,8 @@ func TestProcessWikiPush_CreatesPage(t *testing.T) {
 	if err != nil || !changed {
 		t.Fatalf("action=%q changed=%v err=%v", action, changed, err)
 	}
-	if p := srv.GetWiki("abc12", "home"); p == nil || string(p.LatestContent()) != "new content\n" {
-		t.Errorf("page not created with expected content")
+	if p := srv.GetWiki("abc12", "home"); p == nil || string(p.LatestContent()) != "new content" {
+		t.Errorf("page not created with expected (canonical) content")
 	}
 	if we.Version != 1 || we.MD5 != md5of("new content\n") {
 		t.Errorf("entry pinned to v%d/%s", we.Version, we.MD5)
@@ -134,16 +134,17 @@ func TestProcessWikiPull_FastForward(t *testing.T) {
 	writeFileHelper(local, "v1\n")
 	wiki := &client.Wiki{ID: page.ID, Attributes: client.WikiAttributes{Name: "home", Extra: client.WikiExtra{Version: 2}}}
 	we := &manifest.WikiEntry{Local: "home.md", Page: "home", Direction: "pull", Version: 1, MD5: md5of("v1\n")}
-	action, changed, err := processWikiPullEntry(context.Background(), c, we, "abc12", local, md5of("v1\n"),
+	action, changed, err := processWikiPullEntry(context.Background(), c, we, "abc12", local, md5of("v1"),
 		manifest.StateRemoteNewer, wiki, false, false, "",
-		[]manifest.RemoteVersion{{Version: 2, MD5: md5of("v2 remote\n")}})
+		[]manifest.RemoteVersion{{Version: 2, MD5: md5of("v2 remote")}})
 	if err != nil || !changed {
 		t.Fatalf("action=%q changed=%v err=%v", action, changed, err)
 	}
-	if got := readFileHelper(t, local); got != "v2 remote\n" {
+	// Pulled content is the canonical form OSF stored (trailing newline trimmed).
+	if got := readFileHelper(t, local); got != "v2 remote" {
 		t.Errorf("local content = %q", got)
 	}
-	if we.Version != 2 || we.MD5 != md5of("v2 remote\n") {
+	if we.Version != 2 || we.MD5 != md5of("v2 remote") {
 		t.Errorf("entry pinned to v%d/%s", we.Version, we.MD5)
 	}
 }
@@ -158,11 +159,11 @@ func TestProcessWikiPull_Missing_WritesFile(t *testing.T) {
 	we := &manifest.WikiEntry{Local: "sub/home.md", Page: "home", Direction: "pull"}
 	action, changed, err := processWikiPullEntry(context.Background(), c, we, "abc12", local, "",
 		manifest.StateMissing, wiki, false, false, "",
-		[]manifest.RemoteVersion{{Version: 1, MD5: md5of("only version\n")}})
+		[]manifest.RemoteVersion{{Version: 1, MD5: md5of("only version")}})
 	if err != nil || !changed {
 		t.Fatalf("action=%q changed=%v err=%v", action, changed, err)
 	}
-	if got := readFileHelper(t, local); got != "only version\n" {
+	if got := readFileHelper(t, local); got != "only version" {
 		t.Errorf("local content = %q", got)
 	}
 }

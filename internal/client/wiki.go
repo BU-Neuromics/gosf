@@ -85,6 +85,21 @@ func (v WikiVersion) Contributor() string {
 	return u.ID
 }
 
+// CanonicalizeWikiContent returns the canonical form of wiki content used for
+// hashing and equality comparison. OSF does NOT store wiki content byte-for-byte:
+// it normalizes line endings to LF and trims surrounding whitespace (its DRF
+// content field is trim_whitespace=True, and CRLF is converted to LF on write).
+// gosf therefore cannot promise a byte-exact round trip; instead it compares a
+// canonical form so idempotent pushes and sync classification are stable. The
+// function is idempotent and is applied to BOTH local and remote content, so
+// agreement holds regardless of OSF's exact internal rule.
+func CanonicalizeWikiContent(b []byte) []byte {
+	s := string(b)
+	s = strings.ReplaceAll(s, "\r\n", "\n")
+	s = strings.ReplaceAll(s, "\r", "\n")
+	return []byte(strings.TrimSpace(s))
+}
+
 // IsWikiDisabled reports whether err is the OSF 404 that signals the wiki
 // addon is disabled for the node (as opposed to a missing node or page). The
 // match is on a substring of OSF's "The wiki for this node has been disabled."

@@ -37,13 +37,25 @@ func (s *Server) AddWiki(projectID, name string, content []byte) *WikiPage {
 	return s.addWikiLocked(projectID, name, content)
 }
 
+// osfNormalizeContent mirrors how real OSF stores wiki content: line endings are
+// converted to LF and surrounding whitespace is trimmed (its DRF content field
+// is trim_whitespace=True). Implemented independently of the client's
+// CanonicalizeWikiContent so the fake models OSF on its own — a bug in the
+// client's canonicalization is NOT masked by reusing the same function here.
+func osfNormalizeContent(content []byte) []byte {
+	s := string(content)
+	s = strings.ReplaceAll(s, "\r\n", "\n")
+	s = strings.ReplaceAll(s, "\r", "\n")
+	return []byte(strings.TrimSpace(s))
+}
+
 func (s *Server) addWikiLocked(projectID, name string, content []byte) *WikiPage {
 	s.nextID++
 	p := &WikiPage{
 		ID:       fmt.Sprintf("wk%d", s.nextID),
 		NodeID:   projectID,
 		Name:     name,
-		Versions: [][]byte{content},
+		Versions: [][]byte{osfNormalizeContent(content)},
 	}
 	s.wikis[p.ID] = p
 	s.touchWikiLocked(p)
@@ -56,7 +68,7 @@ func (s *Server) AddWikiVersion(projectID, name string, content []byte) *WikiPag
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if p := s.findWikiLocked(projectID, name); p != nil {
-		p.Versions = append(p.Versions, content)
+		p.Versions = append(p.Versions, osfNormalizeContent(content))
 		s.touchWikiLocked(p)
 		return p
 	}
@@ -438,7 +450,7 @@ func (s *Server) handleWikiVersions(w http.ResponseWriter, r *http.Request, p *W
 			return
 		}
 		s.mu.Lock()
-		p.Versions = append(p.Versions, []byte(payload.Data.Attributes.Content))
+		p.Versions = append(p.Versions, osfNormalizeContent([]byte(payload.Data.Attributes.Content)))
 		s.touchWikiLocked(p)
 		resp := s.wikiVersionJSON(p, len(p.Versions))
 		s.mu.Unlock()
