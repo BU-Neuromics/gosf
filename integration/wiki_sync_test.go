@@ -26,7 +26,7 @@ func TestWikiSync_PushLifecycle(t *testing.T) {
 		t.Fatalf("sync exit %d, stderr: %s\n%s", code, stderr, stdout)
 	}
 	p := e.srv.GetWiki("abc12", "home")
-	if p == nil || string(p.LatestContent()) != "# Home\ninitial\n" {
+	if p == nil || string(p.LatestContent()) != "# Home\ninitial" {
 		t.Fatalf("wiki not created by sync: %v", p)
 	}
 
@@ -72,7 +72,7 @@ func TestWikiSync_PullFastForward(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("sync exit %d, stderr: %s", code, stderr)
 	}
-	if got := e.readFile("docs/guide.md"); got != "guide v2 from web\n" {
+	if got := e.readFile("docs/guide.md"); got != "guide v2 from web" {
 		t.Errorf("local not fast-forwarded: %q", got)
 	}
 	_, _, code = e.run("status")
@@ -107,7 +107,7 @@ func TestWikiSync_RollbackRefusedThenForced(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("forced sync exit %d, stderr: %s", code, stderr)
 	}
-	if got := string(e.srv.GetWiki("abc12", "home").LatestContent()); got != "v1\n" {
+	if got := string(e.srv.GetWiki("abc12", "home").LatestContent()); got != "v1" {
 		t.Errorf("remote content after forced rollback = %q", got)
 	}
 }
@@ -142,7 +142,7 @@ func TestWikiSync_DivergenceBlocksAllTransfers(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("resolve=ours exit %d, stderr: %s", code, stderr)
 	}
-	if got := string(e.srv.GetWiki("abc12", "home").LatestContent()); got != "local edit\n" {
+	if got := string(e.srv.GetWiki("abc12", "home").LatestContent()); got != "local edit" {
 		t.Errorf("remote content after resolve=ours = %q", got)
 	}
 }

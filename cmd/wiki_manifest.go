@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/md5"
 	"fmt"
+	"os"
 	"strconv"
 	"sync"
 
@@ -68,6 +69,29 @@ func md5hex(b []byte) string {
 	return fmt.Sprintf("%x", h[:])
 }
 
+// wikiContentMD5 returns the MD5 of content in its canonical form. Wiki content
+// is hashed canonically (not byte-for-byte) because OSF normalizes it on write;
+// see client.CanonicalizeWikiContent.
+func wikiContentMD5(content []byte) string {
+	return md5hex(client.CanonicalizeWikiContent(content))
+}
+
+// wikiLocalMD5 returns the canonical-content MD5 of the local markdown file at
+// path, or "" (no error) if the file does not exist. This is the wiki analogue
+// of computeLocalMD5, but it hashes the canonical form so a local file that
+// differs from the remote only in line endings or trailing whitespace still
+// classifies as in sync (OSF would store both identically).
+func wikiLocalMD5(path string) (string, error) {
+	data, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	return wikiContentMD5(data), nil
+}
+
 // canSkipWikiHistory mirrors canSkipVersionHistory for wikis: when local content
 // equals the remote latest, or a pinned entry's local still equals its baseline,
 // classification cannot depend on older versions, so per-version content fetches
@@ -102,7 +126,7 @@ func fetchWikiRemoteState(ctx context.Context, cache *wikiScanCache, c *client.O
 	if err != nil {
 		return page, nil, friendlyWikiError(err, nodeID)
 	}
-	latestMD5 := md5hex(latestContent)
+	latestMD5 := wikiContentMD5(latestContent)
 
 	if canSkipWikiHistory(localMD5, latestMD5, latestNum, entry) {
 		log.Debugf("wiki %q: classified from latest (v%d), skipping history", entry.Page, latestNum)
@@ -126,7 +150,7 @@ func fetchWikiRemoteState(ctx context.Context, cache *wikiScanCache, c *client.O
 			log.Tracef("wiki %q: version %d content fetch failed: %v", entry.Page, num, cerr)
 			continue
 		}
-		out = append(out, manifest.RemoteVersion{Version: num, MD5: md5hex(content)})
+		out = append(out, manifest.RemoteVersion{Version: num, MD5: wikiContentMD5(content)})
 	}
 	log.Debugf("wiki %q: %d remote version(s)", entry.Page, len(out))
 	return page, out, nil

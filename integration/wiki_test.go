@@ -49,7 +49,9 @@ func TestWikiLs_JSON(t *testing.T) {
 	if len(items) != 1 || items[0].Name != "home" || items[0].Version != 2 {
 		t.Errorf("items = %+v", items)
 	}
-	if items[0].Size != int64(len("# Home v2\n")) {
+	// OSF stores canonical content (trailing newline trimmed), so the reported
+	// size is of the canonical form.
+	if items[0].Size != int64(len("# Home v2")) {
 		t.Errorf("size = %d", items[0].Size)
 	}
 }
@@ -84,28 +86,30 @@ func TestWikiLs_Disabled(t *testing.T) {
 func TestWikiGet_Stdout(t *testing.T) {
 	e := newTestEnv(t)
 	e.srv.AddProject("abc12", "Wiki Project")
-	content := "# Title\r\nline two\n\nno trailing newline"
-	e.srv.AddWiki("abc12", "home", []byte(content))
+	// OSF normalizes wiki content on write (CRLF→LF, surrounding whitespace
+	// trimmed); the fake mirrors that. get returns the stored (canonical) form.
+	e.srv.AddWiki("abc12", "home", []byte("# Title\r\nline two\n\nno trailing newline"))
 
 	stdout, stderr, code := e.run("wiki", "get", "abc12")
 	if code != 0 {
 		t.Fatalf("exit %d, stderr: %s", code, stderr)
 	}
-	if stdout != content {
-		t.Errorf("content not byte-exact:\ngot  %q\nwant %q", stdout, content)
+	want := "# Title\nline two\n\nno trailing newline"
+	if stdout != want {
+		t.Errorf("content = %q, want canonical %q", stdout, want)
 	}
 }
 
 func TestWikiGet_NamedPageAndDest(t *testing.T) {
 	e := newTestEnv(t)
 	e.srv.AddProject("abc12", "Wiki Project")
-	e.srv.AddWiki("abc12", "Analysis Notes", []byte("notes\n"))
+	e.srv.AddWiki("abc12", "Analysis Notes", []byte("notes"))
 
 	_, stderr, code := e.run("wiki", "get", "abc12:Analysis Notes", "out/notes.md")
 	if code != 0 {
 		t.Fatalf("exit %d, stderr: %s", code, stderr)
 	}
-	if got := e.readFile("out/notes.md"); got != "notes\n" {
+	if got := e.readFile("out/notes.md"); got != "notes" {
 		t.Errorf("dest file = %q", got)
 	}
 
@@ -124,14 +128,14 @@ func TestWikiGet_NamedPageAndDest(t *testing.T) {
 func TestWikiGet_Version(t *testing.T) {
 	e := newTestEnv(t)
 	e.srv.AddProject("abc12", "Wiki Project")
-	e.srv.AddWiki("abc12", "home", []byte("v1 content\n"))
-	e.srv.AddWikiVersion("abc12", "home", []byte("v2 content\n"))
+	e.srv.AddWiki("abc12", "home", []byte("v1 content"))
+	e.srv.AddWikiVersion("abc12", "home", []byte("v2 content"))
 
 	stdout, stderr, code := e.run("wiki", "get", "abc12:home", "--version=1")
 	if code != 0 {
 		t.Fatalf("exit %d, stderr: %s", code, stderr)
 	}
-	if stdout != "v1 content\n" {
+	if stdout != "v1 content" {
 		t.Errorf("historical content = %q", stdout)
 	}
 
@@ -145,8 +149,8 @@ func TestWikiGet_Version(t *testing.T) {
 func TestWikiGet_JSON(t *testing.T) {
 	e := newTestEnv(t)
 	e.srv.AddProject("abc12", "Wiki Project")
-	e.srv.AddWiki("abc12", "home", []byte("# Home\n"))
-	e.srv.AddWikiVersion("abc12", "home", []byte("# Home v2\n"))
+	e.srv.AddWiki("abc12", "home", []byte("# Home"))
+	e.srv.AddWikiVersion("abc12", "home", []byte("# Home v2"))
 
 	stdout, stderr, code := e.run("wiki", "get", "abc12", "--output=json")
 	if code != 0 {
@@ -162,7 +166,7 @@ func TestWikiGet_JSON(t *testing.T) {
 	if err := json.Unmarshal([]byte(stdout), &r); err != nil {
 		t.Fatalf("invalid JSON: %v\n%s", err, stdout)
 	}
-	if r.Project != "abc12" || r.Page != "home" || r.Version != 2 || r.Content != "# Home v2\n" {
+	if r.Project != "abc12" || r.Page != "home" || r.Version != 2 || r.Content != "# Home v2" {
 		t.Errorf("result = %+v", r)
 	}
 }
@@ -184,13 +188,13 @@ func TestWikiGet_PageNotFound(t *testing.T) {
 func TestWikiGet_CaseInsensitiveMatch(t *testing.T) {
 	e := newTestEnv(t)
 	e.srv.AddProject("abc12", "Wiki Project")
-	e.srv.AddWiki("abc12", "Protocol", []byte("steps\n"))
+	e.srv.AddWiki("abc12", "Protocol", []byte("steps"))
 
 	stdout, stderr, code := e.run("wiki", "get", "abc12:protocol")
 	if code != 0 {
 		t.Fatalf("exit %d, stderr: %s", code, stderr)
 	}
-	if stdout != "steps\n" {
+	if stdout != "steps" {
 		t.Errorf("content = %q", stdout)
 	}
 }

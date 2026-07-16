@@ -105,7 +105,7 @@ Examples:
 			if existing, ok := findWikiPage(wikis, page); ok {
 				if content, err := c.GetWikiContent(cmd.Context(), existing.ID); err == nil {
 					entry.Version = existing.Attributes.Extra.Version
-					entry.MD5 = md5hex(content)
+					entry.MD5 = wikiContentMD5(content)
 					entry.Page = existing.Attributes.Name
 				}
 			}
