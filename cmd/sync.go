@@ -141,6 +141,39 @@ Examples:
 			return err
 		}
 
+		// Classify wiki entries (serial pass; the listing cache collapses
+		// repeated per-project fetches, and there are usually only a handful).
+		wcache := newWikiScanCache(osfClient)
+		wikiPlans := make([]wikiEntryPlan, len(m.Wikis))
+		for i := range m.Wikis {
+			we := &m.Wikis[i]
+			proj := we.ResolveProject(m.Project.ID)
+			localAbs := filepath.Join(repoRoot, we.Local)
+			localMD5, err := wikiLocalMD5(localAbs)
+			if err != nil {
+				return fmt.Errorf("computing MD5 for %s: %w", we.Local, err)
+			}
+
+			isPushEligible := we.Direction == "push" || we.Direction == "both"
+			isPullEligible := we.Direction == "pull" || we.Direction == "both"
+
+			var page *client.Wiki
+			var remoteVersions []manifest.RemoteVersion
+			if !syncNoCheckRemote {
+				page, remoteVersions, err = fetchWikiRemoteState(cmd.Context(), wcache, osfClient, proj, *we, localMD5)
+				if err != nil {
+					return err
+				}
+				log.Infof("scanned wiki %s", we.Local)
+			}
+			state := manifest.ClassifyFile(we.BaselineEntry(), localMD5, remoteVersions, syncNoCheckRemote)
+			wikiPlans[i] = wikiEntryPlan{
+				entry: we, proj: proj, localAbs: localAbs, localMD5: localMD5,
+				state: state, page: page, remoteVersions: remoteVersions,
+				treatAsPush: isPushEligible, treatAsPull: !isPushEligible && isPullEligible,
+			}
+		}
+
 		// Pre-flight: refuse to transfer anything if any entry has diverged
 		// (and no applicable --resolve). Fail hard before touching bytes so a
 		// bulk sync never applies a partial, half-resolved state.
@@ -152,6 +185,15 @@ Examples:
 			resolved := (p.treatAsPush && syncResolve == "ours") || (p.treatAsPull && syncResolve == "theirs")
 			if !resolved {
 				blocked = append(blocked, divergenceError(*p.entry, p.proj, p.localMD5, p.remoteVersions).Error())
+			}
+		}
+		for _, p := range wikiPlans {
+			if p.state != manifest.StateDivergent {
+				continue
+			}
+			resolved := (p.treatAsPush && syncResolve == "ours") || (p.treatAsPull && syncResolve == "theirs")
+			if !resolved {
+				blocked = append(blocked, wikiDivergenceError(*p.entry, p.proj, p.localMD5, p.remoteVersions).Error())
 			}
 		}
 		if len(blocked) > 0 {
@@ -179,6 +221,30 @@ Examples:
 			}
 			if jsonMode {
 				jsonResults = append(jsonResults, makeSyncItem(p.entry, p.state, action, p.remoteVersions))
+			}
+		}
+
+		// Execute wiki entries.
+		for _, p := range wikiPlans {
+			var action string
+			var changed bool
+			var perr error
+			switch {
+			case p.treatAsPush:
+				action, changed, perr = processWikiPushEntry(cmd.Context(), osfClient, p.entry, p.proj, p.localAbs, p.localMD5, p.state, p.page, syncDryRun, syncForce, syncResolve, p.remoteVersions)
+			case p.treatAsPull:
+				action, changed, perr = processWikiPullEntry(cmd.Context(), osfClient, p.entry, p.proj, p.localAbs, p.localMD5, p.state, p.page, syncDryRun, syncForce, syncResolve, p.remoteVersions)
+			default:
+				continue
+			}
+			if perr != nil {
+				return perr
+			}
+			if changed {
+				manifestChanged = true
+			}
+			if jsonMode {
+				jsonResults = append(jsonResults, makeWikiSyncItem(p.entry, p.state, action, p.remoteVersions))
 			}
 		}
 
@@ -477,6 +543,21 @@ func downloadAndPin(
 func makeSyncItem(entry *manifest.Entry, state manifest.FileState, action string, remoteVersions []manifest.RemoteVersion) output.SyncItem {
 	item := output.SyncItem{
 		Path:            entry.Local,
+		Kind:            "file",
+		State:           state.String(),
+		DeclaredVersion: entry.Version,
+		ActionTaken:     action,
+	}
+	if len(remoteVersions) > 0 {
+		item.RemoteLatestVersion = latestRemoteVersion(remoteVersions)
+	}
+	return item
+}
+
+func makeWikiSyncItem(entry *manifest.WikiEntry, state manifest.FileState, action string, remoteVersions []manifest.RemoteVersion) output.SyncItem {
+	item := output.SyncItem{
+		Path:            entry.Local,
+		Kind:            "wiki",
 		State:           state.String(),
 		DeclaredVersion: entry.Version,
 		ActionTaken:     action,

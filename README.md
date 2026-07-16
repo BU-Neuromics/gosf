@@ -410,6 +410,44 @@ Flags:
 - `--no-check-remote` — skip remote version lookups (faster; cannot detect
   `BEHIND` or `REMOTE_NEWER`).
 
+### `gosf wiki`
+
+Manage a project's wiki — the versioned markdown pages attached to it. Pages are
+addressed as `<project>:<page>`; the page name is a flat namespace (not a path),
+may contain spaces, and defaults to `home` where optional.
+
+```console
+$ gosf wiki ls abc12                          # list pages
+$ gosf wiki get abc12 | less                  # print the home page
+$ gosf wiki get abc12:protocol protocol.md    # write a page to a file
+$ gosf wiki push docs/home.md abc12:home      # create or update a page
+$ gosf wiki versions abc12:home               # version history
+$ gosf wiki mv abc12:draft "Final Protocol"   # rename
+$ gosf wiki rm abc12:scratch --yes            # delete
+$ gosf wiki open abc12:home                   # open in the browser
+```
+
+`gosf wiki push` creates the page if it does not exist, otherwise mints a new
+version; an identical re-push is skipped (no redundant version). The `home` page
+cannot be renamed or deleted.
+
+**Syncing wiki pages with local markdown.** Track a markdown file as a wiki page
+and it syncs like any other file:
+
+```console
+$ gosf wiki add docs/home.md abc12:home --direction=both
+$ gosf status        # shows the wiki row alongside files
+$ gosf sync          # pushes/pulls the page per its direction and the gate matrix
+```
+
+Wiki entries live under `[[wikis]]` in the manifest and reconcile through the
+same pinned-baseline safety model as files (`PIN_ONLY`, `REMOTE_NEWER`,
+`DIVERGED`, `--force`, `--resolve=ours|theirs`). Note that OSF normalizes wiki
+content on save (CRLF line endings become LF and surrounding whitespace is
+trimmed), so gosf compares a canonical form rather than raw bytes — a local file
+that differs from the wiki only in line endings or a trailing newline still counts
+as in sync, and pushing it again is a no-op.
+
 ## Sync manifest (`.gosf/gosf.toml`)
 
 The manifest lives at `.gosf/gosf.toml` in your repository root (gosf walks up
@@ -442,10 +480,19 @@ direction = "both"
 version   = 0        # not yet pushed — md5 left blank
 md5       = ""
 project   = "xyz89"  # per-entry project override
+
+[[wikis]]
+local     = "docs/home.md"   # markdown file, relative to repo root
+page      = "home"           # wiki page name on OSF
+direction = "both"           # "push", "pull", or "both"
+version   = 3                # pinned wiki version; 0 = not yet pushed
+md5       = "…"              # MD5 of the pinned version's content
 ```
 
-The manifest is updated automatically when you run `gosf sync` or
-`gosf push` — you rarely need to edit it by hand.
+`[[wikis]]` entries track wiki pages the same way `[[files]]` track storage
+files (a `local` path may appear in only one of the two). The manifest is
+updated automatically when you run `gosf sync` or `gosf push` — you rarely need
+to edit it by hand.
 
 ## Scripting with JSON
 
