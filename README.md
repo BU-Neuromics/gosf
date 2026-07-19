@@ -12,6 +12,7 @@ binary with no runtime dependencies.
 $ gosf pull abc12:/data/results.csv
 $ gosf push ./figures/ abc12:/manuscript/figures/
 $ gosf ls abc12:/data
+$ gosf wiki push docs/home.md abc12:home
 ```
 
 ## Features
@@ -32,6 +33,8 @@ $ gosf ls abc12:/data
   half-downloaded files behind.
 - **Sync manifest** — declare files in `.gosf/gosf.toml` and keep them in sync
   with `gosf sync`; CI-friendly status with `gosf status`.
+- **Project wikis** — read, write, and sync a project's versioned markdown wiki
+  pages (`gosf wiki`), including manifest-driven sync of local `.md` files.
 
 ## For coding agents
 
@@ -517,9 +520,25 @@ $ gosf versions abc12:/data/counts.h5 --output=json
 
 $ gosf add data/new.csv abc12:/data/new.csv --output=json
 {"entries":[{"local":"data/new.csv","remote":"/data/new.csv","project":"abc12","version":0,"md5":""}],"manifest_created":false}
+
+$ gosf wiki ls abc12 --output=json
+[{"id":"...","name":"home","version":3,"size":128,"date_modified":"2024-03-01T09:15:00"}]
+
+$ gosf wiki get abc12:home --output=json
+{"project":"abc12","page":"home","version":3,"size":128,"content":"# Home\n..."}
+
+$ gosf wiki push docs/home.md abc12:home --output=json
+{"project":"abc12","page":"home","action":"update","version":4,"dry_run":false}
 ```
 
-In JSON mode, `gosf rm` requires `--yes` (there is no interactive prompt).
+The wiki commands follow the same JSON conventions: `wiki push` reports
+`"action"` ∈ `create|update|skip`, `wiki versions` matches `gosf versions`, and
+`wiki mv`/`wiki add` emit `{node,from,to,dry_run}` / `{entries,manifest_created}`.
+In `gosf status` / `gosf sync` output, each item carries `"kind":"file"|"wiki"`
+so mixed manifests are unambiguous.
+
+In JSON mode, `gosf rm` and `gosf wiki rm` require `--yes` (there is no
+interactive prompt).
 
 ## Global flags
 
