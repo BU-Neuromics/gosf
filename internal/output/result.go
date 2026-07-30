@@ -77,7 +77,6 @@ type AddResult struct {
 type StatusItem struct {
 	Path                string `json:"path"`
 	Kind                string `json:"kind"` // "file" or "wiki"
-	Direction           string `json:"direction"`
 	State               string `json:"state"`
 	DeclaredVersion     int    `json:"declared_version"`
 	RemoteLatestVersion int    `json:"remote_latest_version,omitempty"`

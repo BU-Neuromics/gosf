@@ -69,20 +69,18 @@ Create it with `gosf init <project-id>`, or let `gosf add`/`gosf pull` create it
 id = "abc12"          # default project GUID for all entries
 
 [[files]]
-local     = "data/counts.h5"       # path relative to repo root
-remote    = "/data/counts.h5"      # path in OSF Storage
-direction = "pull"                 # "push", "pull", or "both" (REQUIRED)
-version   = 3                      # pinned OSF version; 0 = not yet pushed
-md5       = "d41d8cd98f00b204..."  # MD5 of pinned version; "" if version=0
-project   = "xyz89"                # optional: override [project].id for this entry
+local   = "data/counts.h5"       # path relative to repo root
+remote  = "/data/counts.h5"      # path in OSF Storage
+version = 3                      # pinned OSF version; 0 = not yet pushed
+md5     = "d41d8cd98f00b204..."  # MD5 of pinned version; "" if version=0
+project = "xyz89"                # optional: override [project].id for this entry
 ```
 
-**Direction is a default intent, not a hard lock.** It sets what `gosf sync` does
-by default; safety comes from state-based gates at the moment of a destructive
-action (see below), not from blanket refusals.
-- `pull` — sync pulls this file
-- `push` — sync pushes this file
-- `both` — sync pushes it (push takes precedence for `both`)
+**There is no per-entry direction.** What a transfer should do is decided at the
+moment of the transfer, by comparing local content, the pinned baseline, and the
+remote (see the state table below). Manifests written by gosf ≤ 1.9 still carry a
+`direction` key: it is ignored with a warning on load and dropped the next time
+gosf writes the file. No migration is needed.
 
 **File states** (from `gosf status`), comparing Local / pinned Baseline / Remote:
 
@@ -114,35 +112,45 @@ gosf sync [--force] [--resolve=ours|theirs] [--dry-run] [--no-check-remote] [--o
 ```
 
 `gosf onboard` is a resumable, interactive wizard (auth → attach a project → pick
-git-untracked files to push via a tree checkbox UI). It writes `direction=push`
-entries and stops; run `gosf sync` to upload. TTY only — for scripting/agents,
-use `init` + `add` + `sync` directly.
+git-untracked files to push via a tree checkbox UI). It writes manifest entries
+and stops; run `gosf sync` to upload. TTY only — for scripting/agents, use
+`init` + `add` + `sync` directly.
 
-`gosf add` always stages for **push**; to record a file for pull, use `gosf pull`
-(it tracks what it downloads). If the remote path is omitted it mirrors the local
-path.
+`gosf add` registers a local file; `gosf pull` registers what it downloads. Both
+are just ways to get an entry into the manifest — neither fixes which way the
+file will move later. If the remote path is omitted it mirrors the local path.
 
-`gosf sync` reconciles per state (pushes push/both entries, pulls pull entries):
+`gosf sync` reconciles every entry that has one unambiguous answer, and reports
+the ones that do not:
 
 | State | Action |
 |-------|--------|
 | `IN_SYNC` | Skip |
 | `PIN_ONLY` | Record the pin (version+MD5), no transfer |
-| `AHEAD_OF_MANIFEST` | Push a new version, update manifest |
-| `NOT_PUSHED` (file exists) | Push, set manifest version+MD5 |
-| `NOT_PUSHED` (file missing) / `MISSING` | Skip / pull to restore |
-| `REMOTE_NEWER` | pull: fast-forward + re-pin; push: refuse unless `--force` |
-| `BEHIND` | pull: restore baseline; push: refuse unless `--force` |
-| `DIVERGED` | **Fail hard** — requires `--resolve=ours\|theirs` |
+| `MISSING` | Download it, pin — no flag needed; nothing local is at risk |
+| `BEHIND` | Fast-forward to the remote's latest, re-pin |
+| `REMOTE_NEWER` | Fast-forward to the remote's latest, re-pin |
+| `NOT_PUSHED` (file exists) | Upload, set manifest version+MD5 |
+| `NOT_PUSHED` (file missing) | Skip — there is nothing anywhere |
+| `AHEAD_OF_MANIFEST` | **Report only**, no transfer; `sync` exits non-zero |
+| `DIVERGED` | **Fail hard** before any transfer — requires `--resolve=ours\|theirs` |
 
-- `--force` authorizes a remote-newer/behind **rollback** and overwriting a
-  locally-modified file on pull. It does **not** cover divergence.
-- `--resolve=ours` keeps local; `--resolve=theirs` keeps remote.
+`AHEAD_OF_MANIFEST` is the one state `sync` will not guess at: the same
+difference means "publish this" for a generated output and "throw this away" for
+an edited input, and no hash comparison tells them apart. Say which you meant
+with the verb — `gosf push` publishes it, `gosf pull --force` (or
+`gosf sync --force`) discards it.
+
+- `--force` on `sync`/`pull` discards local modifications, restoring the tracked
+  version from OSF. It does **not** cover divergence.
+- `--resolve=ours` keeps local; `--resolve=theirs` keeps remote. Whichever you
+  pass is honored as given — nothing on the entry overrides it.
 
 ### File transfer
 
 ```bash
 gosf pull <project>[:<path>] [dest] [--version=N] [--force] [--resolve=theirs] [--dry-run]
+gosf pull <project>:<path> <dest> --track-only      # register entries, transfer nothing
 gosf push <src> <project>:<path> [--conflict=skip|overwrite|rename] [--dry-run]
 gosf push [--yes|--force] [--resolve=ours]          # no args: push manifest entries
 gosf rm <project>:<path> [--yes] [--dry-run]
@@ -156,6 +164,11 @@ gosf rm <project>:<path> [--yes] [--dry-run]
   writing remote data. `--yes` skips the prompt for safe pushes; `--force` also
   authorizes a rollback. **In `--output=json`, `--force` is required** (no prompt).
 - `pull --version=N` fetches a historical version (single-file targets only).
+- `pull --track-only` registers a remote subtree in the manifest without moving
+  any bytes, so a large project can be adopted and reviewed before it is
+  downloaded. The entries land as `MISSING`; a plain `gosf sync` then fetches
+  them. `sync` only ever visits entries in the manifest, so this is how remote
+  files that nothing tracks become visible to it.
 
 ### Storage management
 
@@ -184,7 +197,7 @@ gosf set <project> [--title ...] [--description ...] [--category ...] [--tags ..
 
 ```bash
 gosf init abc12                                  # 1. create .gosf/gosf.toml
-gosf pull abc12:/data/ ml/data/                  # 2. pull + track (direction=pull)
+gosf pull abc12:/data/ ml/data/                  # 2. download + track
 gosf status                                      # 3. verify → all ✓ IN_SYNC
 ```
 
@@ -194,17 +207,18 @@ records the pin — no redundant downloads.
 ### Push locally modified outputs
 
 ```bash
-gosf add results/model.pkl abc12:/results/model.pkl   # stage for push (once)
-gosf sync --dry-run                                   # preview
-gosf sync --yes                                       # push (skip the prompt)
+gosf add results/model.pkl abc12:/results/model.pkl   # track it (once)
+gosf status                                           # AHEAD → local has unpublished work
+gosf push --dry-run                                   # preview
+gosf push --yes                                       # publish (skip the prompt)
 ```
 
 ### Resolve a divergence
 
 ```bash
 # gosf sync failed hard: notes.md changed both locally and on OSF.
-gosf pull abc12:/notes.md --resolve=theirs   # take remote (discard local), or
-gosf push notes.md --resolve=ours            # take local (discard remote)
+gosf sync --resolve=theirs   # take remote (discard local), or
+gosf sync --resolve=ours     # take local  (discard remote)
 ```
 
 ### Check whether everything is in sync (CI)

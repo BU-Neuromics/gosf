@@ -14,8 +14,6 @@ import (
 	"github.com/BU-Neuromics/gosf/internal/output"
 )
 
-var wikiAddDirection string
-
 var wikiAddCmd = &cobra.Command{
 	Use:   "add <local.md> [<project>:]<page>",
 	Short: "Track a local markdown file as a wiki page in .gosf/gosf.toml",
@@ -28,17 +26,12 @@ otherwise the entry starts unpinned (version 0).
 
 Examples:
   gosf wiki add docs/home.md home
-  gosf wiki add docs/home.md abc12:home --direction=both
+  gosf wiki add docs/home.md abc12:home
   gosf wiki add "docs/Analysis Notes.md"     # page "Analysis Notes"`,
 	Args:         cobra.RangeArgs(1, 2),
 	SilenceUsage: true,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		src := args[0]
-		switch wikiAddDirection {
-		case "push", "pull", "both":
-		default:
-			return fmt.Errorf("--direction must be push, pull, or both, got %q", wikiAddDirection)
-		}
 
 		// Parse the optional <project>:<page> destination.
 		var nodeID, page string
@@ -92,10 +85,9 @@ Examples:
 		}
 
 		entry := manifest.WikiEntry{
-			Local:     src,
-			Page:      page,
-			Direction: wikiAddDirection,
-			Project:   entryProject,
+			Local:   src,
+			Page:    page,
+			Project: entryProject,
 		}
 
 		// Pin to the remote if the page already exists.
@@ -167,6 +159,5 @@ func findWikiEntryByLocal(m *manifest.Manifest, local string) int {
 }
 
 func init() {
-	wikiAddCmd.Flags().StringVar(&wikiAddDirection, "direction", "push", "Sync direction: push, pull, or both")
 	wikiCmd.AddCommand(wikiAddCmd)
 }

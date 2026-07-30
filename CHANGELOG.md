@@ -5,6 +5,107 @@ All notable changes to this project will be documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.0] - 2026-07-30
+
+A major release because `direction` is gone from the manifest, along with the
+refusals it caused. **Existing manifests keep working untouched** — the key is
+accepted and ignored with a one-time warning, then dropped the next time gosf
+writes the file. The breaking changes to watch for are in tooling around gosf,
+not in the manifest: `gosf status --output=json` no longer emits `direction`,
+`gosf wiki add --direction` is removed, `gosf sync` no longer publishes locally
+modified files, and `gosf sync --force` has a new meaning. See **Migrating from
+1.x** at the end of this entry.
+
+### Fixed
+
+- **`gosf sync` silently refused to create files that exist on OSF but not
+  locally** (#81). A tracked file that was missing from the working tree was
+  skipped with `missing locally, skipping`, and no flag — `--force` included —
+  changed that: an entry recorded for pushing was never routed to the code that
+  downloads. A plain `gosf sync` now restores it. Two related refusals are gone
+  with it: `--resolve` was rejected unless it happened to match the entry's
+  recorded direction (so the divergence message recommended a command `sync`
+  then refused), and a `both` entry with a newer remote hit a rollback refusal
+  instead of fast-forwarding.
+- `gosf pull` over a subtree replaced whole manifest entries, flipping tracked
+  outputs to `direction=pull` and quietly stopping them from being published
+  again. Pulling no longer changes how an entry behaves afterwards.
+
+### Changed
+
+- **BREAKING: `direction` is removed from the manifest** (#81, finishes #38, and
+  the cause of the bug above).
+  Every state has exactly one correct action, derived from comparing local
+  content, the pinned baseline, and the remote at the moment of the transfer;
+  the two states that are genuinely ambiguous are reported for you to resolve
+  rather than guessed at from a field recorded weeks earlier. **No migration is
+  needed:** a `direction` key in an existing manifest is accepted and ignored
+  with a one-time warning on load, and dropped the next time gosf writes the
+  file. `gosf wiki add --direction` is removed; `gosf status` drops its `DIR`
+  column and the `direction` field from `--output=json`.
+- **BREAKING:** `gosf sync` reports `AHEAD_OF_MANIFEST` instead of pushing it, and exits
+  non-zero. A locally modified file is work to publish for a generated output
+  and a scratch edit to discard for an input, and no hash comparison tells them
+  apart — so say which with the verb: `gosf push` publishes it, `gosf pull
+  --force` (or `gosf sync --force`) discards it. `sync --force` now means
+  "discard local modifications" rather than "authorize a rollback".
+- Bare `gosf push` and `gosf pull` select entries by state rather than by a
+  manifest field: push publishes what is modified or never pushed, pull fetches
+  what is missing or behind. A push that would merely bury a newer remote
+  version is skipped rather than failing the whole run (`--force` still performs
+  the rollback deliberately).
+- Bare `gosf push` and `gosf pull` now scan the manifest concurrently through
+  the caching resolver, like `sync` and `status`, and accept `--jobs`/`-j`.
+
+### Added
+
+- `gosf pull --track-only` registers a remote subtree in `.gosf/gosf.toml`
+  without transferring any bytes, so a large project can be adopted and reviewed
+  before it is downloaded. The entries land as `MISSING` and a plain `gosf sync`
+  fetches them. `sync` only ever visits entries in the manifest, so this is how
+  remote files that nothing tracks become visible to it.
+
+### Documentation
+
+- The wiki feature was missing from three at-a-glance spots that undersold it:
+  the README intro examples, the Features list, and the JSON scripting section.
+  Added, along with a note on the shared JSON conventions and the `status`/`sync`
+  `"kind"` field.
+
+### Migrating from 1.x
+
+**Your manifest needs no edits.** `.gosf/gosf.toml` keeps loading as-is; the
+retired `direction` key produces one warning per run and is dropped the next time
+gosf writes the file (any `sync`/`push`/`pull` that changes a pin, or
+`add`/`wiki add`/`init`). Read-only commands like `status` warn but never
+rewrite, so run `gosf init <project-id>` if you want to clear the warning
+deliberately — it rewrites in place with no other effect. Note that the rewrite
+re-marshals the file, so hand-written comments and column alignment are lost.
+
+Check these four things instead:
+
+1. **Scripts parsing `gosf status --output=json`** — the `direction` field is
+   gone. Items still carry `path`, `kind`, `state`, `declared_version`, and
+   `remote_latest_version`.
+2. **Anything invoking `gosf wiki add --direction=…`** — the flag no longer
+   exists and the command will now fail with `unknown flag`.
+3. **Pipelines that relied on `gosf sync` to publish outputs** — it no longer
+   does. `sync` reports locally modified files and exits non-zero; use
+   `gosf push` (with `--yes` when unattended) to publish. `gosf sync` in CI as a
+   drift check now behaves like `gosf status` for that state.
+4. **Anything passing `--force` to `gosf sync`** — it used to authorize pushing
+   over a newer remote version; it now means "discard local modifications and
+   restore from OSF". If you wanted the old behavior, that is `gosf push
+   --force`.
+
+One capability is genuinely gone: `direction = "pull"` could mark a file that
+must never be republished, and nothing in the manifest replaces it. In practice
+an unmodified file stays `IN_SYNC` and never enters a push plan, and interactive
+`gosf push` prints a per-file plan and prompts first — so the exposure is
+unattended `gosf push --yes`/`--force` over a locally modified input. If that
+matters for your pipeline, the check has to live in the pipeline for now
+(a `--only <glob>` selector is the intended fix, tracked separately).
+
 ## [1.9.0] - 2026-07-16
 
 ### Added

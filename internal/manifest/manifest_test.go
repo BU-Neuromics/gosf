@@ -27,14 +27,12 @@ id = "abc12"
 [[files]]
 local     = "data/raw/counts.h5"
 remote    = "/data/raw/counts.h5"
-direction = "pull"
 version   = 3
 md5       = "d41d8cd98f00b204e9800998ecf8427e"
 
 [[files]]
 local     = "results/model.pkl"
 remote    = "/results/model.pkl"
-direction = "push"
 version   = 1
 md5       = "098f6bcd4621d373cade4e832627b4f6"
 `
@@ -59,9 +57,6 @@ func TestLoad_HappyPath(t *testing.T) {
 	if f.Local != "data/raw/counts.h5" {
 		t.Errorf("files[0].local = %q", f.Local)
 	}
-	if f.Direction != "pull" {
-		t.Errorf("files[0].direction = %q", f.Direction)
-	}
 	if f.Version != 3 {
 		t.Errorf("files[0].version = %d", f.Version)
 	}
@@ -79,7 +74,6 @@ id = "abc12"
 [[files]]
 local     = "data/raw/counts.h5"
 remote    = "/data/raw/counts.h5"
-direction = "both"
 version   = 0
 md5       = ""
 project   = "xyz89"
@@ -94,49 +88,6 @@ project   = "xyz89"
 	}
 }
 
-func TestLoad_MissingDirection_Error(t *testing.T) {
-	dir := t.TempDir()
-	const toml = `
-[project]
-id = "abc12"
-
-[[files]]
-local   = "data/raw/counts.h5"
-remote  = "/data/raw/counts.h5"
-version = 0
-md5     = ""
-`
-	// direction is absent — must fail validation
-	p := writeFile(t, dir, "gosf.toml", toml)
-	_, err := manifest.Load(p)
-	if err == nil {
-		t.Fatal("expected error for missing direction, got nil")
-	}
-	if !strings.Contains(err.Error(), "direction") {
-		t.Errorf("error should mention 'direction': %v", err)
-	}
-}
-
-func TestLoad_InvalidDirection_Error(t *testing.T) {
-	dir := t.TempDir()
-	const toml = `
-[project]
-id = "abc12"
-
-[[files]]
-local     = "data/raw/counts.h5"
-remote    = "/data/raw/counts.h5"
-direction = "sideways"
-version   = 0
-md5       = ""
-`
-	p := writeFile(t, dir, "gosf.toml", toml)
-	_, err := manifest.Load(p)
-	if err == nil {
-		t.Fatal("expected error for invalid direction")
-	}
-}
-
 func TestLoad_DuplicateLocalPath_Error(t *testing.T) {
 	dir := t.TempDir()
 	const toml = `
@@ -146,14 +97,12 @@ id = "abc12"
 [[files]]
 local     = "data/counts.h5"
 remote    = "/data/counts.h5"
-direction = "push"
 version   = 0
 md5       = ""
 
 [[files]]
 local     = "data/counts.h5"
 remote    = "/data/other.h5"
-direction = "push"
 version   = 0
 md5       = ""
 `
@@ -176,14 +125,12 @@ id = "abc12"
 [[files]]
 local     = "data/a.h5"
 remote    = "/data/same.h5"
-direction = "push"
 version   = 0
 md5       = ""
 
 [[files]]
 local     = "data/b.h5"
 remote    = "/data/same.h5"
-direction = "push"
 version   = 0
 md5       = ""
 `
@@ -201,7 +148,6 @@ func TestLoad_MissingProject_Error(t *testing.T) {
 [[files]]
 local     = "data/counts.h5"
 remote    = "/data/counts.h5"
-direction = "push"
 version   = 0
 md5       = ""
 `
@@ -347,8 +293,8 @@ func TestEntry_ResolveProject(t *testing.T) {
 	m := &manifest.Manifest{
 		Project: manifest.ProjectConfig{ID: "abc12"},
 		Files: []manifest.Entry{
-			{Local: "a.csv", Remote: "/a.csv", Direction: "push", Project: ""},
-			{Local: "b.csv", Remote: "/b.csv", Direction: "pull", Project: "xyz89"},
+			{Local: "a.csv", Remote: "/a.csv", Project: ""},
+			{Local: "b.csv", Remote: "/b.csv", Project: "xyz89"},
 		},
 	}
 	if p := m.Files[0].ResolveProject(m.Project.ID); p != "abc12" {

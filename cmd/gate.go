@@ -19,8 +19,151 @@ type entryPlan struct {
 	state          manifest.FileState
 	resolvedItem   *client.FileItem
 	remoteVersions []manifest.RemoteVersion
-	treatAsPush    bool
-	treatAsPull    bool
+}
+
+// syncAction is the single reconciliation step chosen for one entry.
+//
+// Which one applies is decided entirely by the classified state — how local
+// content, the pinned baseline, and the remote compare *now* — plus the flags
+// given on this run. Nothing recorded in the manifest steers it: every state
+// has one correct action, and the two states that genuinely do not
+// (AHEAD_OF_MANIFEST, DIVERGED) are reported for the user to resolve rather
+// than guessed at (issue #81).
+type syncAction int
+
+const (
+	actionNone    syncAction = iota // nothing to do
+	actionPin                       // record version + md5; no bytes move
+	actionPull                      // download the remote's latest, re-pin
+	actionPush                      // upload the local file, re-pin
+	actionRestore                   // overwrite locally-modified content from the remote
+	actionReport                    // ambiguous — report it, transfer nothing
+	actionBlocked                   // diverged with no --resolve: fail the run
+)
+
+func (a syncAction) String() string {
+	switch a {
+	case actionNone:
+		return "none"
+	case actionPin:
+		return "pin"
+	case actionPull:
+		return "pull"
+	case actionPush:
+		return "push"
+	case actionRestore:
+		return "restore"
+	case actionReport:
+		return "report"
+	case actionBlocked:
+		return "blocked"
+	default:
+		return "unknown"
+	}
+}
+
+// syncDecision is the whole of `gosf sync`'s policy: reconcile everything that
+// has an unambiguous answer, report what does not.
+//
+//	IN_SYNC             nothing
+//	PIN_ONLY            record version + md5, no transfer
+//	MISSING             download (writing a file that does not exist destroys
+//	                    nothing — it is the safest transfer gosf can perform,
+//	                    and needs no --force)
+//	BEHIND              fast-forward
+//	REMOTE_NEWER        fast-forward
+//	NOT_PUSHED + local  upload (registering the file was the intent)
+//	NOT_PUSHED, no local skip — there is nothing anywhere
+//	AHEAD_OF_MANIFEST   report; --force discards the local change instead
+//	DIVERGED            blocked; --resolve picks a side, honored as given
+func syncDecision(state manifest.FileState, localExists, force bool, resolve string) syncAction {
+	switch state {
+	case manifest.StateInSync:
+		return actionNone
+	case manifest.StatePinOnly:
+		return actionPin
+	case manifest.StateMissing, manifest.StateBehind, manifest.StateRemoteNewer:
+		return actionPull
+	case manifest.StateNotPushed:
+		if localExists {
+			return actionPush
+		}
+		return actionNone
+	case manifest.StateAheadOfManifest:
+		if force {
+			return actionRestore
+		}
+		return actionReport
+	case manifest.StateDivergent:
+		return resolveDecision(resolve)
+	}
+	return actionNone
+}
+
+// pushDecision is bare `gosf push`: publish local work. It selects the states
+// where local holds content the remote does not, plus a deliberate rollback
+// under --force. Where local content is already on the remote (REMOTE_NEWER,
+// BEHIND) a push would only bury a newer version while adding nothing, so it is
+// skipped rather than refused — one such entry must not block the whole run.
+func pushDecision(state manifest.FileState, localExists, force bool, resolve string) syncAction {
+	switch state {
+	case manifest.StateAheadOfManifest:
+		return actionPush
+	case manifest.StateNotPushed:
+		if localExists {
+			return actionPush
+		}
+		return actionNone
+	case manifest.StatePinOnly:
+		return actionPin
+	case manifest.StateRemoteNewer, manifest.StateBehind:
+		if force {
+			return actionPush
+		}
+		return actionNone
+	case manifest.StateDivergent:
+		if resolve == "ours" {
+			return actionPush
+		}
+		return actionBlocked
+	}
+	return actionNone
+}
+
+// pullDecision is bare `gosf pull`: fetch what the remote has and local does
+// not. It never uploads, so --resolve=ours is not a resolution it can apply.
+func pullDecision(state manifest.FileState, force bool, resolve string) syncAction {
+	switch state {
+	case manifest.StateMissing, manifest.StateBehind, manifest.StateRemoteNewer:
+		return actionPull
+	case manifest.StatePinOnly:
+		return actionPin
+	case manifest.StateAheadOfManifest:
+		if force {
+			return actionRestore
+		}
+		return actionReport
+	case manifest.StateDivergent:
+		if resolve == "theirs" {
+			return actionPull
+		}
+		return actionBlocked
+	}
+	return actionNone
+}
+
+// resolveDecision maps an explicit --resolve to the side it takes. An
+// at-the-moment choice is strictly more current than anything on the entry, so
+// it is honored unconditionally.
+func resolveDecision(resolve string) syncAction {
+	switch resolve {
+	case "ours":
+		return actionPush
+	case "theirs":
+		return actionPull
+	default:
+		return actionBlocked
+	}
 }
 
 // validateResolve checks a --resolve flag value.
@@ -125,15 +268,15 @@ func divergenceError(entry manifest.Entry, proj, localMD5 string, remoteVersions
 			"  remote:   v%d  md5 %s   (changed)\n"+
 			"Both sides have unreconciled changes; refusing to overwrite either automatically.\n"+
 			"Resolve explicitly:\n"+
-			"  gosf pull  %s:%s --resolve=theirs   # take remote (discards local)\n"+
-			"  gosf push  %s --resolve=ours     # take local  (discards remote v%d)",
+			"  gosf sync --resolve=theirs   # take remote (discards local)\n"+
+			"  gosf sync --resolve=ours     # take local  (discards remote v%d)\n"+
+			"or inspect the remote first:  gosf pull %s:%s scratch-copy",
 		entry.Local,
 		entry.Version, shortMD5(entry.MD5),
 		shortMD5(localMD5),
 		latest.Version, shortMD5(latest.MD5),
-		proj, entry.Remote,
-		entry.Local,
 		latest.Version,
+		proj, entry.Remote,
 	)
 }
 

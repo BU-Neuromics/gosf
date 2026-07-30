@@ -25,19 +25,16 @@ id = "abc12"
 [[files]]
 local = "data/x.csv"
 remote = "/data/x.csv"
-direction = "push"
 
 [[wikis]]
 local = "docs/home.md"
 page = "home"
-direction = "both"
 version = 3
 md5 = "d41d8cd98f00b204e9800998ecf8427e"
 
 [[wikis]]
 local = "docs/notes.md"
 page = "Analysis Notes"
-direction = "push"
 project = "xyz89"
 `)
 	m, err := Load(p)
@@ -48,7 +45,7 @@ project = "xyz89"
 		t.Fatalf("got %d wiki entries, want 2", len(m.Wikis))
 	}
 	w := m.Wikis[0]
-	if w.Local != "docs/home.md" || w.Page != "home" || w.Direction != "both" || w.Version != 3 {
+	if w.Local != "docs/home.md" || w.Page != "home" || w.Version != 3 {
 		t.Errorf("first wiki entry = %+v", w)
 	}
 	if got := m.Wikis[1].ResolveProject(m.Project.ID); got != "xyz89" {
@@ -65,7 +62,7 @@ func TestWikiEntrySaveRoundTrip(t *testing.T) {
 	m := &Manifest{
 		Project: ProjectConfig{ID: "abc12"},
 		Wikis: []WikiEntry{
-			{Local: "docs/home.md", Page: "home", Direction: "both", Version: 2, MD5: "aa"},
+			{Local: "docs/home.md", Page: "home", Version: 2, MD5: "aa"},
 		},
 	}
 	if err := Save(m, p); err != nil {
@@ -87,30 +84,10 @@ func TestWikiValidation(t *testing.T) {
 		wantErr string
 	}{
 		{
-			"missing direction",
-			`[project]
-id = "abc12"
-[[wikis]]
-local = "a.md"
-page = "a"`,
-			"direction is required",
-		},
-		{
-			"invalid direction",
-			`[project]
-id = "abc12"
-[[wikis]]
-local = "a.md"
-page = "a"
-direction = "sideways"`,
-			"invalid",
-		},
-		{
 			"no project",
 			`[[wikis]]
 local = "a.md"
-page = "a"
-direction = "push"`,
+page = "a"`,
 			"no project",
 		},
 		{
@@ -120,11 +97,9 @@ id = "abc12"
 [[wikis]]
 local = "a.md"
 page = "a"
-direction = "push"
 [[wikis]]
 local = "a.md"
-page = "b"
-direction = "push"`,
+page = "b"`,
 			"duplicate local path",
 		},
 		{
@@ -134,11 +109,9 @@ id = "abc12"
 [[files]]
 local = "a.md"
 remote = "/a.md"
-direction = "push"
 [[wikis]]
 local = "a.md"
-page = "a"
-direction = "push"`,
+page = "a"`,
 			"duplicate local path",
 		},
 		{
@@ -148,11 +121,9 @@ id = "abc12"
 [[wikis]]
 local = "a.md"
 page = "home"
-direction = "push"
 [[wikis]]
 local = "b.md"
-page = "home"
-direction = "push"`,
+page = "home"`,
 			"duplicate (project, page)",
 		},
 		{
@@ -161,8 +132,7 @@ direction = "push"`,
 id = "abc12"
 [[wikis]]
 local = "a.md"
-page = ""
-direction = "push"`,
+page = ""`,
 			"page name",
 		},
 		{
@@ -171,8 +141,7 @@ direction = "push"`,
 id = "abc12"
 [[wikis]]
 local = "a.md"
-page = "a/b"
-direction = "push"`,
+page = "a/b"`,
 			"forward slashes",
 		},
 	}
@@ -198,7 +167,6 @@ id = "abc12"
 [[wikis]]
 local = "a.md"
 page = "`+long+`"
-direction = "push"
 `)
 	_, err := Load(p)
 	if err == nil || !strings.Contains(err.Error(), "100 characters") {
@@ -209,7 +177,7 @@ direction = "push"
 // TestClassifyWikiEntry proves a wiki entry classifies through the same state
 // machine as files by converting its baseline into the Entry shape.
 func TestClassifyWikiEntry(t *testing.T) {
-	we := WikiEntry{Local: "docs/home.md", Page: "home", Direction: "both", Version: 2, MD5: "bb"}
+	we := WikiEntry{Local: "docs/home.md", Page: "home", Version: 2, MD5: "bb"}
 	remote := []RemoteVersion{{Version: 3, MD5: "cc"}, {Version: 2, MD5: "bb"}, {Version: 1, MD5: "aa"}}
 
 	// L == B, R newer → REMOTE_NEWER
