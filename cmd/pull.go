@@ -18,11 +18,13 @@ import (
 )
 
 var (
-	pullDryRun  bool
-	pullVersion int
-	pullNoTrack bool
-	pullForce   bool
-	pullResolve string
+	pullDryRun    bool
+	pullVersion   int
+	pullNoTrack   bool
+	pullTrackOnly bool
+	pullForce     bool
+	pullResolve   string
+	pullJobs      int
 )
 
 var pullCmd = &cobra.Command{
@@ -30,11 +32,15 @@ var pullCmd = &cobra.Command{
 	Short: "Download files from an OSF project",
 	Long: `Download files from an OSF project to a local destination.
 
-With no arguments, pulls all tracked files with direction=pull or direction=both
-from .gosf/gosf.toml. Requires .gosf/gosf.toml with [project].id set (run 'gosf init').
+With no arguments, downloads every tracked file that is missing locally or behind
+the remote, from .gosf/gosf.toml. Locally modified files are reported and left
+alone unless --force is given. Requires .gosf/gosf.toml with [project].id set
+(run 'gosf init').
 
 With a path argument, downloads the specified file or folder and records it
-in .gosf/gosf.toml (unless --no-track is set).
+in .gosf/gosf.toml (unless --no-track is set). --track-only registers the files
+without transferring any bytes, so a large remote can be adopted and reviewed
+before it is downloaded; a plain 'gosf sync' then fetches them.
 
 Path rules follow scp conventions:
   gosf pull abc12:/data/file.csv             → ./data/file.csv
@@ -48,6 +54,12 @@ Path rules follow scp conventions:
 		if err := validateResolve(pullResolve); err != nil {
 			return err
 		}
+		if pullTrackOnly && pullNoTrack {
+			return fmt.Errorf("--track-only and --no-track are contradictory: one records entries without downloading, the other downloads without recording")
+		}
+		if pullTrackOnly && len(args) == 0 {
+			return fmt.Errorf("--track-only needs a remote path to register, e.g. gosf pull abc12:/data/ --track-only")
+		}
 		token := config.LoadToken(flagToken)
 		osfClient := client.New(token)
 		wb := client.NewWaterbutler(token)
@@ -59,7 +71,10 @@ Path rules follow scp conventions:
 	},
 }
 
-// runBarePull pulls all pull-eligible tracked manifest entries.
+// runBarePull downloads every tracked entry the remote has and local does not.
+// Selection is by state, not by any field on the entry: whether a download is
+// the right move is a property of how local, the pinned baseline, and the
+// remote compare right now (issue #81).
 func runBarePull(ctx context.Context, osfClient *client.OSFClient, wb *client.WaterbutlerClient) error {
 	manifestPath, repoRoot, err := manifest.FindManifest()
 	if manifest.IsNotFound(err) {
@@ -77,36 +92,32 @@ func runBarePull(ctx context.Context, osfClient *client.OSFClient, wb *client.Wa
 		return fmt.Errorf("no project configured — run: gosf init <project-id>")
 	}
 
-	res := resolver.New(osfClient)
+	// Per-run cache so the many files sharing directories don't each re-list them.
+	res := resolver.New(resolver.NewCachingLister(osfClient))
 	jsonMode := flagOutput == "json"
 	jsonResults := make([]output.SyncItem, 0)
 	manifestChanged := false
 
-	for i := range m.Files {
-		entry := &m.Files[i]
-		if entry.Direction != "pull" && entry.Direction != "both" {
-			continue
+	plans, err := scanEntries(ctx, m, repoRoot, res, osfClient, pullJobs, false)
+	if err != nil {
+		return err
+	}
+
+	actions := make([]syncAction, len(plans))
+	var blocked []string
+	for i, p := range plans {
+		actions[i] = pullDecision(p.state, pullForce, pullResolve)
+		if actions[i] == actionBlocked {
+			blocked = append(blocked, divergenceError(*p.entry, p.proj, p.localMD5, p.remoteVersions).Error())
 		}
-		proj := entry.ResolveProject(m.Project.ID)
-		localAbs := filepath.Join(repoRoot, entry.Local)
+	}
+	if len(blocked) > 0 {
+		return fmt.Errorf("%s", strings.Join(blocked, "\n\n"))
+	}
 
-		localMD5, _ := computeLocalMD5(localAbs)
-
-		var remoteVersions []manifest.RemoteVersion
-		var resolvedItem *client.FileItem
-		// Resolve every pull entry (including unpinned ones) so content can be
-		// compared and a download URL is available.
-		item, resolveErr := res.Resolve(ctx, proj, entry.Remote)
-		if resolveErr == nil {
-			resolvedItem = &item
-			fvs, fetchErr := osfClient.GetFileVersions(ctx, item.ID)
-			if fetchErr == nil {
-				remoteVersions = fileVersionsToRemote(fvs)
-			}
-		}
-
-		state := manifest.ClassifyFile(*entry, localMD5, remoteVersions, false)
-		action, changed, err := processPullEntry(ctx, entry, proj, localAbs, localMD5, state, resolvedItem, wb, osfClient, repoRoot, progressBarEnabled(), pullDryRun, pullForce, pullResolve, remoteVersions)
+	deps := transferDeps{res: res, wb: wb, osf: osfClient, showBar: progressBarEnabled(), dryRun: pullDryRun}
+	for i, p := range plans {
+		action, changed, err := executeEntry(ctx, p, actions[i], deps)
 		if err != nil {
 			return err
 		}
@@ -114,7 +125,7 @@ func runBarePull(ctx context.Context, osfClient *client.OSFClient, wb *client.Wa
 			manifestChanged = true
 		}
 		if jsonMode {
-			jsonResults = append(jsonResults, makeSyncItem(entry, state, action, remoteVersions))
+			jsonResults = append(jsonResults, makeSyncItem(p.entry, p.state, action, p.remoteVersions))
 		}
 	}
 
@@ -195,6 +206,7 @@ func runExplicitPull(cmd *cobra.Command, args []string, osfClient *client.OSFCli
 		dryRun:       pullDryRun,
 		version:      pullVersion,
 		track:        !pullNoTrack,
+		trackOnly:    pullTrackOnly,
 		manifest:     m,
 		manifestPath: manifestPath,
 		nodeID:       target.NodeID,
@@ -240,7 +252,10 @@ func runExplicitPull(cmd *cobra.Command, args []string, osfClient *client.OSFCli
 	if jsonMode {
 		return output.PrintJSON(os.Stdout, s.result)
 	}
-	if len(s.result.Downloaded) == 0 {
+	switch {
+	case s.trackOnly:
+		log.Infof("registered %d file(s) in %s — run 'gosf sync' to download them", len(s.tracked), s.manifestPath)
+	case len(s.result.Downloaded) == 0:
 		log.Infof("nothing to download (no files at that path)")
 	}
 	return nil
@@ -262,6 +277,7 @@ type pullSession struct {
 	dryRun       bool
 	version      int
 	track        bool
+	trackOnly    bool
 	manifest     *manifest.Manifest
 	manifestPath string
 	nodeID       string
@@ -315,14 +331,21 @@ func (s *pullSession) file(item client.FileItem, destPath string) error {
 		return nil
 	}
 
+	switch {
+	case s.trackOnly:
+		// Register the file without moving any bytes: the point is to make a
+		// large remote visible in the manifest so it can be reviewed (and then
+		// fetched by a plain `gosf sync`) rather than downloaded blind.
+		log.Infof("+ tracked %s (not downloaded)", destPath)
+
 	// Idempotent skip: if the destination already holds byte-identical content
 	// there is nothing to transfer. Only applies when fetching the latest
 	// version (item hashes describe the latest, not a requested revision).
-	identical := s.version == 0 && localFileMatches(destPath, item.Attributes.Extra.Hashes.MD5)
-	if identical {
+	case s.version == 0 && localFileMatches(destPath, item.Attributes.Extra.Hashes.MD5):
 		log.Infof("≡ %s (identical, skipped)", destPath)
 		s.result.Add(destPath, item.Attributes.Size)
-	} else {
+
+	default:
 		if item.Links.Download == "" {
 			return fmt.Errorf("no download URL for %q", item.Attributes.Name)
 		}
@@ -342,17 +365,7 @@ func (s *pullSession) file(item client.FileItem, destPath string) error {
 
 	// Auto-track.
 	if trackThis {
-		ver := s.version
-		md5 := ""
-		if ver == 0 {
-			if versions, err := s.osf.GetFileVersions(s.ctx, item.ID); err == nil && len(versions) > 0 {
-				ver = versions[0].Number()
-				md5 = versions[0].Attributes.Extra.Hashes.MD5
-			}
-		} else {
-			// Specific version: compute MD5 from downloaded file.
-			md5, _ = computeLocalMD5(destPath)
-		}
+		ver, md5 := s.pinFor(item, destPath)
 		entryProject := ""
 		if s.nodeID != s.manifest.Project.ID {
 			entryProject = s.nodeID
@@ -361,16 +374,39 @@ func (s *pullSession) file(item client.FileItem, destPath string) error {
 		s.tracked = append(s.tracked, trackedEntry{
 			local: localPath,
 			entry: manifest.Entry{
-				Local:     localPath,
-				Remote:    remotePath,
-				Direction: "pull",
-				Version:   ver,
-				MD5:       md5,
-				Project:   entryProject,
+				Local:   localPath,
+				Remote:  remotePath,
+				Version: ver,
+				MD5:     md5,
+				Project: entryProject,
 			},
 		})
 	}
 	return nil
+}
+
+// pinFor returns the version number and MD5 to record for a pulled file. The
+// hashes come from OSF's version listing, which is also the only source
+// available under --track-only (there is no local copy to hash); falling back to
+// the downloaded file covers a remote that reports no hash for the revision.
+func (s *pullSession) pinFor(item client.FileItem, destPath string) (version int, md5 string) {
+	versions, err := s.osf.GetFileVersions(s.ctx, item.ID)
+	if err == nil && len(versions) > 0 {
+		if s.version == 0 {
+			return versions[0].Number(), versions[0].Attributes.Extra.Hashes.MD5
+		}
+		for _, v := range versions {
+			if v.Number() == s.version {
+				md5 = v.Attributes.Extra.Hashes.MD5
+				break
+			}
+		}
+	}
+	version = s.version
+	if md5 == "" && !s.trackOnly {
+		md5, _ = computeLocalMD5(destPath)
+	}
+	return version, md5
 }
 
 // tree recursively downloads a slice of items into destDir.
@@ -414,7 +450,9 @@ func init() {
 	pullCmd.Flags().BoolVar(&pullDryRun, "dry-run", false, "Show what would be downloaded without downloading")
 	pullCmd.Flags().IntVar(&pullVersion, "version", 0, "Download a specific version number (0 = latest)")
 	pullCmd.Flags().BoolVar(&pullNoTrack, "no-track", false, "Download without recording in .gosf/gosf.toml")
+	pullCmd.Flags().BoolVar(&pullTrackOnly, "track-only", false, "Record entries in .gosf/gosf.toml without downloading anything")
 	pullCmd.Flags().BoolVar(&pullForce, "force", false, "Overwrite locally-modified files with the pinned version")
 	pullCmd.Flags().StringVar(&pullResolve, "resolve", "", "Resolve divergence by taking remote: 'theirs'")
+	pullCmd.Flags().IntVarP(&pullJobs, "jobs", "j", defaultScanJobs, "Number of files to scan against the remote concurrently")
 	rootCmd.AddCommand(pullCmd)
 }

@@ -14,9 +14,9 @@ func TestWikiSync_PushLifecycle(t *testing.T) {
 	e.srv.AddProject("abc12", "Wiki Project")
 	e.run("init", "abc12")
 
-	// Track a brand-new wiki page (direction=push) and a file.
+	// Track a brand-new wiki page and a file.
 	e.writeFile("docs/home.md", "# Home\ninitial\n")
-	e.run("wiki", "add", "docs/home.md", "abc12:home", "--direction=push")
+	e.run("wiki", "add", "docs/home.md", "abc12:home")
 	e.writeFile("data/x.csv", "a,b\n1,2\n")
 	e.run("add", "data/x.csv", "abc12:/x.csv")
 
@@ -46,18 +46,17 @@ func TestWikiSync_PushLifecycle(t *testing.T) {
 	}
 }
 
-// TestWikiSync_PullFastForward tracks an existing remote wiki as direction=pull
-// and confirms sync fast-forwards the local file after a web edit.
+// TestWikiSync_PullFastForward tracks an existing remote wiki and confirms sync
+// fast-forwards the local file after a web edit.
 func TestWikiSync_PullFastForward(t *testing.T) {
 	e := newTestEnv(t)
 	e.srv.AddProject("abc12", "Wiki Project")
 	e.srv.AddWiki("abc12", "guide", []byte("guide v1\n"))
 	e.run("init", "abc12")
 
-	// Track the remote page as a consumer (direction=pull) — add pins v1 and
-	// writes the local file to match.
+	// Track the remote page — add pins v1, and the local file already matches.
 	e.writeFile("docs/guide.md", "guide v1\n")
-	e.run("wiki", "add", "docs/guide.md", "abc12:guide", "--direction=pull")
+	e.run("wiki", "add", "docs/guide.md", "abc12:guide")
 
 	_, _, code := e.run("status")
 	if code != 0 {
@@ -81,34 +80,34 @@ func TestWikiSync_PullFastForward(t *testing.T) {
 	}
 }
 
-func TestWikiSync_RollbackRefusedThenForced(t *testing.T) {
+// A page whose remote moved ahead while local stayed at the pinned baseline is
+// a safe fast-forward, whatever the entry was once created for. Before #81 the
+// same setup hit a "would roll the remote back" refusal, because a page tracked
+// for pushing was never routed to the pull handler.
+func TestWikiSync_RemoteNewerFastForwards(t *testing.T) {
 	e := newTestEnv(t)
 	e.srv.AddProject("abc12", "Wiki Project")
 	e.run("init", "abc12")
 
 	e.writeFile("docs/home.md", "v1\n")
-	e.run("wiki", "add", "docs/home.md", "abc12:home", "--direction=push")
+	e.run("wiki", "add", "docs/home.md", "abc12:home")
 	e.run("sync") // creates v1, pins
 
 	// Remote advances to v2 (web edit); local stays at pinned v1.
 	e.srv.AddWikiVersion("abc12", "home", []byte("v2 web\n"))
 
-	// A push-direction sync would roll the remote back → refused.
 	_, stderr, code := e.run("sync")
-	if code == 0 || !strings.Contains(stderr, "--force") {
-		t.Fatalf("expected rollback refusal, code=%d stderr=%s", code, stderr)
+	if code != 0 {
+		t.Fatalf("sync should fast-forward, not refuse; exit %d stderr=%s", code, stderr)
+	}
+	if got := e.readFile("docs/home.md"); got != "v2 web" {
+		t.Errorf("local not fast-forwarded: %q", got)
 	}
 	if v := e.srv.GetWiki("abc12", "home").LatestVersion(); v != 2 {
-		t.Errorf("remote should still be v2, got v%d", v)
+		t.Errorf("no new remote version should be minted, got v%d", v)
 	}
-
-	// --force authorizes the rollback: a new version equal to local.
-	_, stderr, code = e.run("sync", "--force")
-	if code != 0 {
-		t.Fatalf("forced sync exit %d, stderr: %s", code, stderr)
-	}
-	if got := string(e.srv.GetWiki("abc12", "home").LatestContent()); got != "v1" {
-		t.Errorf("remote content after forced rollback = %q", got)
+	if _, _, code = e.run("status"); code != 0 {
+		t.Errorf("status should be in sync after fast-forward, got %d", code)
 	}
 }
 
@@ -119,7 +118,7 @@ func TestWikiSync_DivergenceBlocksAllTransfers(t *testing.T) {
 
 	// Pin at v1, then diverge both sides.
 	e.writeFile("docs/home.md", "v1\n")
-	e.run("wiki", "add", "docs/home.md", "abc12:home", "--direction=both")
+	e.run("wiki", "add", "docs/home.md", "abc12:home")
 	e.run("sync")
 	e.srv.AddWikiVersion("abc12", "home", []byte("remote edit\n")) // remote moved
 	e.writeFile("docs/home.md", "local edit\n")                    // local moved
@@ -152,7 +151,7 @@ func TestWikiSync_JSONKind(t *testing.T) {
 	e.srv.AddProject("abc12", "Wiki Project")
 	e.run("init", "abc12")
 	e.writeFile("docs/home.md", "hi\n")
-	e.run("wiki", "add", "docs/home.md", "abc12:home", "--direction=push")
+	e.run("wiki", "add", "docs/home.md", "abc12:home")
 
 	stdout, stderr, code := e.run("sync", "--output=json")
 	if code != 0 {

@@ -110,9 +110,8 @@ func runOnboard(cmd *cobra.Command, args []string) error {
 			continue
 		}
 		m.Files = append(m.Files, manifest.Entry{
-			Local:     rel,
-			Remote:    remotePath(base, rel),
-			Direction: "push",
+			Local:  rel,
+			Remote: remotePath(base, rel),
 		})
 		added++
 	}
@@ -121,7 +120,7 @@ func runOnboard(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("updating %s: %w", mfPath, err)
 		}
 	}
-	fmt.Fprintf(os.Stderr, "%s added %d file(s) to %s as direction=push\n", output.Green("✓"), added, mfPath)
+	fmt.Fprintf(os.Stderr, "%s added %d file(s) to %s\n", output.Green("✓"), added, mfPath)
 	return onboardSummary(mfPath)
 }
 

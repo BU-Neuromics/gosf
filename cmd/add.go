@@ -19,9 +19,9 @@ import (
 
 var addCmd = &cobra.Command{
 	Use:   "add <local-path> [<project>:]<remote-path>",
-	Short: "Stage a local file or directory for push to OSF",
-	Long: `Add a local file or directory to gosf.toml, staged for push to OSF.
-Direction is always "push". Use 'gosf pull' to record downloaded files.
+	Short: "Track a local file or directory in the gosf manifest",
+	Long: `Add a local file or directory to gosf.toml so gosf keeps it in sync with OSF.
+Use 'gosf pull' to record files that already exist on the remote.
 
 If <remote-path> is omitted the remote path mirrors the local path.
 If <local-path> is a directory, all files in it are added recursively.
@@ -130,10 +130,9 @@ Path rules follow scp conventions:
 					return fmt.Errorf("entry with local path %q already exists in .gosf/gosf.toml", path)
 				}
 				e := manifest.Entry{
-					Local:     path,
-					Remote:    remotePath,
-					Direction: "push",
-					Project:   entryProject,
+					Local:   path,
+					Remote:  remotePath,
+					Project: entryProject,
 				}
 				entries = append(entries, e)
 				addEntries = append(addEntries, output.AddEntry{
@@ -154,10 +153,9 @@ Path rules follow scp conventions:
 			}
 
 			entry := manifest.Entry{
-				Local:     localSrc,
-				Remote:    remotePath,
-				Direction: "push",
-				Project:   entryProject,
+				Local:   localSrc,
+				Remote:  remotePath,
+				Project: entryProject,
 			}
 
 			// Fetch remote version if the file already exists on OSF.

@@ -42,7 +42,7 @@ func TestFetchWikiRemoteState_PageAbsent(t *testing.T) {
 	srv, c := newWikiScanFixture(t)
 	srv.AddProject("abc12", "P")
 
-	entry := manifest.WikiEntry{Local: "docs/home.md", Page: "home", Direction: "push"}
+	entry := manifest.WikiEntry{Local: "docs/home.md", Page: "home"}
 	wiki, versions, err := fetchWikiRemoteState(context.Background(), newWikiScanCache(c), c, "abc12", entry, md5of("x"))
 	if err != nil {
 		t.Fatalf("err = %v", err)
@@ -58,7 +58,7 @@ func TestFetchWikiRemoteState_SkipsHistoryWhenLocalMatchesLatest(t *testing.T) {
 	srv.AddWiki("abc12", "home", []byte("v1"))
 	srv.AddWikiVersion("abc12", "home", []byte("v2"))
 
-	entry := manifest.WikiEntry{Local: "docs/home.md", Page: "home", Direction: "both"}
+	entry := manifest.WikiEntry{Local: "docs/home.md", Page: "home"}
 	wiki, versions, err := fetchWikiRemoteState(context.Background(), newWikiScanCache(c), c, "abc12", entry, md5of("v2"))
 	if err != nil || wiki == nil {
 		t.Fatalf("err = %v, wiki = %v", err, wiki)
@@ -89,7 +89,7 @@ func TestFetchWikiRemoteState_SkipsHistoryWhenPinnedBaselineHolds(t *testing.T) 
 
 	// Pinned at v1 and local still equals the baseline → REMOTE_NEWER is
 	// decidable from the latest version alone.
-	entry := manifest.WikiEntry{Local: "docs/home.md", Page: "home", Direction: "both", Version: 1, MD5: md5of("v1")}
+	entry := manifest.WikiEntry{Local: "docs/home.md", Page: "home", Version: 1, MD5: md5of("v1")}
 	_, versions, err := fetchWikiRemoteState(context.Background(), newWikiScanCache(c), c, "abc12", entry, md5of("v1"))
 	if err != nil {
 		t.Fatalf("err = %v", err)
@@ -115,7 +115,7 @@ func TestFetchWikiRemoteState_FullHistoryWhenDiverging(t *testing.T) {
 
 	// Local content is the old v1, pinned at v2: matches neither baseline nor
 	// latest, so the full history must be hashed to detect BEHIND.
-	entry := manifest.WikiEntry{Local: "docs/home.md", Page: "home", Direction: "both", Version: 2, MD5: md5of("v2")}
+	entry := manifest.WikiEntry{Local: "docs/home.md", Page: "home", Version: 2, MD5: md5of("v2")}
 	_, versions, err := fetchWikiRemoteState(context.Background(), newWikiScanCache(c), c, "abc12", entry, md5of("v1"))
 	if err != nil {
 		t.Fatalf("err = %v", err)
@@ -149,7 +149,7 @@ func TestFetchWikiRemoteState_DisabledSurfacesError(t *testing.T) {
 	srv.AddProject("abc12", "P")
 	srv.SetWikiDisabled("abc12")
 
-	entry := manifest.WikiEntry{Local: "docs/home.md", Page: "home", Direction: "push"}
+	entry := manifest.WikiEntry{Local: "docs/home.md", Page: "home"}
 	_, _, err := fetchWikiRemoteState(context.Background(), newWikiScanCache(c), c, "abc12", entry, md5of("x"))
 	if err == nil {
 		t.Fatal("expected error for disabled wiki")
@@ -163,8 +163,8 @@ func TestWikiScanCache_CollapsesListings(t *testing.T) {
 	srv.AddWiki("abc12", "notes", []byte("n1"))
 
 	cache := newWikiScanCache(c)
-	entryA := manifest.WikiEntry{Local: "a.md", Page: "home", Direction: "both"}
-	entryB := manifest.WikiEntry{Local: "b.md", Page: "notes", Direction: "both"}
+	entryA := manifest.WikiEntry{Local: "a.md", Page: "home"}
+	entryB := manifest.WikiEntry{Local: "b.md", Page: "notes"}
 	if _, _, err := fetchWikiRemoteState(context.Background(), cache, c, "abc12", entryA, md5of("v1")); err != nil {
 		t.Fatal(err)
 	}

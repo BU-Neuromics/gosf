@@ -5,6 +5,56 @@ All notable changes to this project will be documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **`gosf sync` silently refused to create files that exist on OSF but not
+  locally** (#81). A tracked file that was missing from the working tree was
+  skipped with `missing locally, skipping`, and no flag — `--force` included —
+  changed that: an entry recorded for pushing was never routed to the code that
+  downloads. A plain `gosf sync` now restores it. Two related refusals are gone
+  with it: `--resolve` was rejected unless it happened to match the entry's
+  recorded direction (so the divergence message recommended a command `sync`
+  then refused), and a `both` entry with a newer remote hit a rollback refusal
+  instead of fast-forwarding.
+- `gosf pull` over a subtree replaced whole manifest entries, flipping tracked
+  outputs to `direction=pull` and quietly stopping them from being published
+  again. Pulling no longer changes how an entry behaves afterwards.
+
+### Changed
+
+- **BREAKING: `direction` is removed from the manifest** (#81, finishes #38).
+  Every state has exactly one correct action, derived from comparing local
+  content, the pinned baseline, and the remote at the moment of the transfer;
+  the two states that are genuinely ambiguous are reported for you to resolve
+  rather than guessed at from a field recorded weeks earlier. **No migration is
+  needed:** a `direction` key in an existing manifest is accepted and ignored
+  with a one-time warning on load, and dropped the next time gosf writes the
+  file. `gosf wiki add --direction` is removed; `gosf status` drops its `DIR`
+  column and the `direction` field from `--output=json`.
+- `gosf sync` reports `AHEAD_OF_MANIFEST` instead of pushing it, and exits
+  non-zero. A locally modified file is work to publish for a generated output
+  and a scratch edit to discard for an input, and no hash comparison tells them
+  apart — so say which with the verb: `gosf push` publishes it, `gosf pull
+  --force` (or `gosf sync --force`) discards it. `sync --force` now means
+  "discard local modifications" rather than "authorize a rollback".
+- Bare `gosf push` and `gosf pull` select entries by state rather than by a
+  manifest field: push publishes what is modified or never pushed, pull fetches
+  what is missing or behind. A push that would merely bury a newer remote
+  version is skipped rather than failing the whole run (`--force` still performs
+  the rollback deliberately).
+- Bare `gosf push` and `gosf pull` now scan the manifest concurrently through
+  the caching resolver, like `sync` and `status`, and accept `--jobs`/`-j`.
+
+### Added
+
+- `gosf pull --track-only` registers a remote subtree in `.gosf/gosf.toml`
+  without transferring any bytes, so a large project can be adopted and reviewed
+  before it is downloaded. The entries land as `MISSING` and a plain `gosf sync`
+  fetches them. `sync` only ever visits entries in the manifest, so this is how
+  remote files that nothing tracks become visible to it.
+
 ## [1.9.0] - 2026-07-16
 
 ### Added

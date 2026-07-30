@@ -141,7 +141,7 @@ func TestOnboard_PTY_EndToEnd(t *testing.T) {
 			t.Errorf("manifest missing %q:\n%s", want, toml)
 		}
 	}
-	if !strings.Contains(toml, "push") {
-		t.Errorf("expected direction=push entries:\n%s", toml)
+	if strings.Contains(toml, "direction") {
+		t.Errorf("direction is no longer written to the manifest:\n%s", toml)
 	}
 }
