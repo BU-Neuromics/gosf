@@ -2977,3 +2977,91 @@ md5     = "%s"
 		t.Errorf("data.csv = %q", got)
 	}
 }
+
+// ---- Issue #86: request efficiency and rate-limit resilience ----
+
+// OSF serves 10 items per page by default and caps at 100. gosf never asked for
+// a size, so a folder of 87 files cost 9 requests instead of 1 — the dominant
+// source of rate-limit pressure on a large manifest. fakeosf now paginates
+// exactly like OSF, so this measures the real thing.
+func TestLs_LargeFolderCostsOneRequestNotTen(t *testing.T) {
+	env := newTestEnv(t)
+	env.srv.AddProject("abc12", "Test Project")
+	env.srv.AddFolder("abc12", "/data")
+	const n = 87
+	for i := 0; i < n; i++ {
+		env.srv.AddFile("abc12", fmt.Sprintf("/data/f%02d.csv", i), []byte("x"))
+	}
+
+	before := env.srv.ListRequests()
+	stdout, stderr, code := env.run("ls", "abc12:/data", "--output=json")
+	if code != 0 {
+		t.Fatalf("ls exit %d; stderr=%s", code, stderr)
+	}
+	var items []map[string]any
+	if err := json.Unmarshal([]byte(stdout), &items); err != nil {
+		t.Fatalf("parsing ls JSON: %v", err)
+	}
+	if len(items) != n {
+		t.Errorf("listed %d files, want all %d — pagination must be followed", len(items), n)
+	}
+
+	// One page for the root (to find /data) plus one for /data itself. At the
+	// old default of 10 per page, /data alone would have taken 9.
+	spent := env.srv.ListRequests() - before
+	if spent > 2 {
+		t.Errorf("listing %d files took %d requests; want 2 (page[size]=100 not applied?)", n, spent)
+	}
+}
+
+// More files than fit in a single maximum-size page must still be listed in
+// full: the next-link walk has to work, not just the big first page.
+func TestLs_FolderLargerThanOnePageIsListedInFull(t *testing.T) {
+	env := newTestEnv(t)
+	env.srv.AddProject("abc12", "Test Project")
+	env.srv.AddFolder("abc12", "/many")
+	const n = 250 // > 2 maximum pages
+	for i := 0; i < n; i++ {
+		env.srv.AddFile("abc12", fmt.Sprintf("/many/f%03d.csv", i), []byte("x"))
+	}
+
+	stdout, stderr, code := env.run("ls", "abc12:/many", "--output=json")
+	if code != 0 {
+		t.Fatalf("ls exit %d; stderr=%s", code, stderr)
+	}
+	var items []map[string]any
+	if err := json.Unmarshal([]byte(stdout), &items); err != nil {
+		t.Fatalf("parsing ls JSON: %v", err)
+	}
+	if len(items) != n {
+		t.Errorf("listed %d files, want %d — the links.next walk dropped items", len(items), n)
+	}
+}
+
+// A manifest scan over a large folder must also stay on the cheap path.
+func TestStatus_LargeManifestScanIsPageEfficient(t *testing.T) {
+	env := newTestEnv(t)
+	env.srv.AddProject("abc12", "Test Project")
+	env.srv.AddFolder("abc12", "/data")
+	const n = 40
+	toml := "[project]\nid = \"abc12\"\n"
+	for i := 0; i < n; i++ {
+		remote := fmt.Sprintf("/data/f%02d.csv", i)
+		f := env.srv.AddFile("abc12", remote, []byte("content"))
+		env.writeFile(fmt.Sprintf("data/f%02d.csv", i), "content")
+		toml += fmt.Sprintf("\n[[files]]\nlocal = \"data/f%02d.csv\"\nremote = %q\nversion = 1\nmd5 = %q\n",
+			i, remote, f.VersionMD5(1))
+	}
+	env.writeFile(".gosf/gosf.toml", toml)
+
+	before := env.srv.ListRequests()
+	_, stderr, code := env.run("status")
+	if code != 0 {
+		t.Fatalf("status exit %d; stderr=%s", code, stderr)
+	}
+	// The caching lister collapses the shared directory to a single listing;
+	// with a 100-item page that is 2 requests total for 40 tracked files.
+	if spent := env.srv.ListRequests() - before; spent > 2 {
+		t.Errorf("scanning %d files took %d listing requests, want 2", n, spent)
+	}
+}

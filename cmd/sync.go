@@ -105,11 +105,11 @@ Examples:
 		// large manifest visibly makes headway instead of appearing stalled.
 		plans, err := scanEntries(cmd.Context(), m, repoRoot, res, osfClient, syncJobs, syncNoCheckRemote)
 		if err != nil {
-			return err
+			return friendlyAPIError(err, token != "")
 		}
 		wikiPlans, err := scanWikiEntries(cmd.Context(), m, repoRoot, osfClient, syncNoCheckRemote)
 		if err != nil {
-			return err
+			return friendlyAPIError(err, token != "")
 		}
 
 		// Decide every entry's action up front so the pre-flight sees the whole

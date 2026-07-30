@@ -65,7 +65,7 @@ Path rules follow scp conventions:
 		wb := client.NewWaterbutler(token)
 
 		if len(args) == 0 {
-			return runBarePull(cmd.Context(), osfClient, wb)
+			return runBarePull(cmd.Context(), osfClient, wb, token)
 		}
 		return runExplicitPull(cmd, args, osfClient, wb)
 	},
@@ -75,7 +75,7 @@ Path rules follow scp conventions:
 // Selection is by state, not by any field on the entry: whether a download is
 // the right move is a property of how local, the pinned baseline, and the
 // remote compare right now (issue #81).
-func runBarePull(ctx context.Context, osfClient *client.OSFClient, wb *client.WaterbutlerClient) error {
+func runBarePull(ctx context.Context, osfClient *client.OSFClient, wb *client.WaterbutlerClient, token string) error {
 	manifestPath, repoRoot, err := manifest.FindManifest()
 	if manifest.IsNotFound(err) {
 		return fmt.Errorf("no .gosf/gosf.toml found — run: gosf init <project-id>")
@@ -98,9 +98,10 @@ func runBarePull(ctx context.Context, osfClient *client.OSFClient, wb *client.Wa
 	jsonResults := make([]output.SyncItem, 0)
 	manifestChanged := false
 
+	warnUnauthenticated(token, len(m.Files))
 	plans, err := scanEntries(ctx, m, repoRoot, res, osfClient, pullJobs, false)
 	if err != nil {
-		return err
+		return friendlyAPIError(err, token != "")
 	}
 
 	actions := make([]syncAction, len(plans))

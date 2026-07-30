@@ -332,8 +332,10 @@ func TestGetFileVersions_HappyPath(t *testing.T) {
 	}
 	// The OSF versions endpoint rejects embed=user with a 400 ("The following
 	// fields are not embeddable: user"), so we must not send any embed param.
-	if gotQuery != "" {
-		t.Errorf("query = %q, want empty (no embed param)", gotQuery)
+	// Other parameters are fine — page[size] is sent on every paginated
+	// endpoint to keep the request count down (issue #86).
+	if strings.Contains(gotQuery, "embed") {
+		t.Errorf("query = %q, must not contain an embed param", gotQuery)
 	}
 	if len(versions) != 3 {
 		t.Fatalf("got %d versions, want 3", len(versions))

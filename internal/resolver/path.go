@@ -2,6 +2,7 @@ package resolver
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -92,7 +93,7 @@ func (r *Resolver) ListDir(ctx context.Context, nodeID, path string) ([]client.F
 	for i, comp := range components {
 		found, ok := findItem(items, comp)
 		if !ok {
-			return nil, fmt.Errorf("path not found: /%s", strings.Join(components[:i+1], "/"))
+			return nil, &NotFoundError{Path: "/" + strings.Join(components[:i+1], "/")}
 		}
 
 		isLast := i == len(components)-1
@@ -147,7 +148,7 @@ func (r *Resolver) Resolve(ctx context.Context, nodeID, path string) (client.Fil
 	if item, ok := findItem(siblings, name); ok {
 		return item, nil
 	}
-	return client.FileItem{}, fmt.Errorf("path not found: %s", path)
+	return client.FileItem{}, &NotFoundError{Path: path}
 }
 
 func findItem(items []client.FileItem, name string) (client.FileItem, bool) {
@@ -157,4 +158,25 @@ func findItem(items []client.FileItem, name string) (client.FileItem, bool) {
 		}
 	}
 	return client.FileItem{}, false
+}
+
+// NotFoundError reports that a path does not exist on the remote — as opposed
+// to the remote being unreachable or refusing to answer.
+//
+// The distinction is load-bearing. A scan treats "not found" as "nothing on the
+// remote to compare", which for an unpinned entry classifies NOT_PUSHED and
+// makes sync upload it. If a throttled or failed request were folded into the
+// same category, a transient 429 would cause gosf to re-upload files that were
+// already on the remote, byte-identical (issue #86).
+type NotFoundError struct {
+	Path string
+}
+
+func (e *NotFoundError) Error() string { return "path not found: " + e.Path }
+
+// IsNotFound reports whether err means "this path is not on the remote".
+// Transport failures, throttling, and permission errors all report false.
+func IsNotFound(err error) bool {
+	var nf *NotFoundError
+	return errors.As(err, &nf)
 }

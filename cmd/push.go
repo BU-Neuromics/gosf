@@ -186,7 +186,7 @@ func runBarePush(cmd *cobra.Command) error {
 	// baseline, and the remote compare right now (issue #81).
 	scanned, err := scanEntries(cmd.Context(), m, repoRoot, res, osfClient, pushJobs, pushNoCheckRemote)
 	if err != nil {
-		return err
+		return friendlyAPIError(err, token != "")
 	}
 	plans := make([]entryPlan, 0, len(scanned))
 	actions := make([]syncAction, 0, len(scanned))

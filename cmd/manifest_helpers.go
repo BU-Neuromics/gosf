@@ -102,32 +102,41 @@ func canSkipVersionHistory(localMD5, latestMD5 string, latestNum int, entry mani
 // fetchRemoteState resolves an entry's remote file and returns it along with the
 // remote versions needed to classify it. It fetches the full version history
 // only when necessary: when wantVersions is true and the latest-version fast
-// path (canSkipVersionHistory) does not apply. Returns a nil item when the
-// remote path does not resolve (e.g. not yet pushed). Resolution and version
-// fetches go through the (cached) resolver/client, so repeated directory
-// listings collapse to one network call.
-func fetchRemoteState(ctx context.Context, res *resolver.Resolver, osf *client.OSFClient, proj string, entry manifest.Entry, localMD5 string, wantVersions bool) (*client.FileItem, []manifest.RemoteVersion) {
+// path (canSkipVersionHistory) does not apply. Resolution and version fetches go
+// through the (cached) resolver/client, so repeated directory listings collapse
+// to one network call.
+//
+// A remote path that genuinely does not exist returns (nil, nil, nil) — that is
+// a valid classification input meaning "nothing on the remote to compare".
+// Anything else (throttling, an unreachable API, a permission error) is
+// returned as an error rather than folded into the same answer: treating a 429
+// as "the file is not there" classifies an unpinned entry as NOT_PUSHED, and
+// since #81 that makes sync upload a file that was already on the remote
+// (issue #86).
+func fetchRemoteState(ctx context.Context, res *resolver.Resolver, osf *client.OSFClient, proj string, entry manifest.Entry, localMD5 string, wantVersions bool) (*client.FileItem, []manifest.RemoteVersion, error) {
 	item, err := res.Resolve(ctx, proj, entry.Remote)
 	if err != nil {
-		log.Debugf("%s: not resolved on remote (%v)", entry.Remote, err)
-		return nil, nil
+		if resolver.IsNotFound(err) {
+			log.Debugf("%s: not on the remote", entry.Remote)
+			return nil, nil, nil
+		}
+		return nil, nil, fmt.Errorf("checking %s on the remote: %w", entry.Remote, err)
 	}
 	if !wantVersions {
-		return &item, nil
+		return &item, nil, nil
 	}
 
 	latestMD5 := item.Attributes.Extra.Hashes.MD5
 	latestNum := item.Attributes.CurrentVersion
 	if canSkipVersionHistory(localMD5, latestMD5, latestNum, entry) {
 		log.Debugf("%s: classified from listing (remote latest v%d), skipping version history", entry.Local, latestNum)
-		return &item, []manifest.RemoteVersion{{Version: latestNum, MD5: latestMD5}}
+		return &item, []manifest.RemoteVersion{{Version: latestNum, MD5: latestMD5}}, nil
 	}
 
 	fvs, err := osf.GetFileVersions(ctx, item.ID)
 	if err != nil {
-		log.Tracef("%s: versions fetch failed: %v", entry.Local, err)
-		return &item, nil
+		return nil, nil, fmt.Errorf("fetching versions of %s: %w", entry.Remote, err)
 	}
 	log.Debugf("%s: %d remote version(s)", entry.Local, len(fvs))
-	return &item, fileVersionsToRemote(fvs)
+	return &item, fileVersionsToRemote(fvs), nil
 }
