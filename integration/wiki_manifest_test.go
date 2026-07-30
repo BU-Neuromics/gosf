@@ -16,7 +16,7 @@ func TestWikiAdd_NewAndExisting(t *testing.T) {
 
 	// Existing page: pinned to its remote version + content MD5.
 	e.writeFile("docs/home.md", "remote home\n")
-	stdout, stderr, code := e.run("wiki", "add", "docs/home.md", "abc12:home", "--direction=both", "--output=json")
+	stdout, stderr, code := e.run("wiki", "add", "docs/home.md", "abc12:home", "--output=json")
 	if code != 0 {
 		t.Fatalf("exit %d, stderr: %s", code, stderr)
 	}
@@ -65,7 +65,7 @@ func TestStatus_MixedFilesAndWikis(t *testing.T) {
 	e.run("add", "data/x.csv", "abc12:/data/x.csv")
 	// Track the wiki, pinned & in sync.
 	e.writeFile("docs/home.md", "home v1\n")
-	e.run("wiki", "add", "docs/home.md", "abc12:home", "--direction=both")
+	e.run("wiki", "add", "docs/home.md", "abc12:home")
 
 	// A remote wiki edit makes the wiki REMOTE_NEWER.
 	e.srv.AddWikiVersion("abc12", "home", []byte("home v2 from web\n"))
@@ -106,7 +106,7 @@ func TestStatus_WikiTableRow(t *testing.T) {
 	e.srv.AddWiki("abc12", "home", []byte("home\n"))
 	e.run("init", "abc12")
 	e.writeFile("docs/home.md", "home\n")
-	e.run("wiki", "add", "docs/home.md", "abc12:home", "--direction=both")
+	e.run("wiki", "add", "docs/home.md", "abc12:home")
 
 	stdout, _, _ := e.run("status")
 	if !strings.Contains(stdout, "docs/home.md") || !strings.Contains(stdout, `wiki "home"`) {

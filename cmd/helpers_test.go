@@ -243,26 +243,22 @@ func TestLatestRemoteVersion(t *testing.T) {
 	}
 }
 
-func TestPushRefusedForPullDirectionEntry(t *testing.T) {
+// An explicit `gosf push <src> <project>:<path>` is no longer refused because
+// of anything recorded on the tracked entry: the verb is the intent, and the
+// state gates decide the rest (issue #81).
+func TestPushNotRefusedForTrackedEntry(t *testing.T) {
 	m := &manifest.Manifest{
 		Files: []manifest.Entry{
-			{Local: "data/counts.h5", Remote: "/data/counts.h5", Direction: "pull", Version: 2},
+			{Local: "data/counts.h5", Remote: "/data/counts.h5", Version: 2},
 		},
 	}
-	// findEntryByLocal finds it and direction == "pull" → push should be refused.
 	idx := findEntryByLocal(m, "data/counts.h5")
 	if idx < 0 {
 		t.Fatal("expected entry to be found")
 	}
-	if m.Files[idx].Direction != "pull" {
-		t.Errorf("direction = %q, want pull", m.Files[idx].Direction)
-	}
-	// Verify that "both" and "push" are not refused.
-	for _, dir := range []string{"push", "both"} {
-		m.Files[0].Direction = dir
-		if m.Files[idx].Direction == "pull" {
-			t.Errorf("direction %q should not trigger refusal", dir)
-		}
+	// Whatever its history, an AHEAD entry is publishable.
+	if got := pushDecision(manifest.StateAheadOfManifest, true, false, ""); got != actionPush {
+		t.Errorf("pushDecision(AHEAD) = %v, want actionPush", got)
 	}
 }
 
@@ -288,7 +284,7 @@ func TestTrackedRemoteConflict(t *testing.T) {
 	m := &manifest.Manifest{
 		Project: manifest.ProjectConfig{ID: "abc12"},
 		Files: []manifest.Entry{
-			{Local: "ml_prediction/ccc/lca_class.csv", Remote: "/ccc/lca_class.csv", Direction: "pull", Version: 1},
+			{Local: "ml_prediction/ccc/lca_class.csv", Remote: "/ccc/lca_class.csv", Version: 1},
 		},
 	}
 

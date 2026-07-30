@@ -127,7 +127,7 @@ gosf/
 │   ├── root.go              # root command, global flags, version
 │   ├── ls.go
 │   ├── pull.go              # --version=<n> flag for specific version download
-│   ├── push.go              # manifest direction enforcement + manifest update on push
+│   ├── push.go              # bare push selects by state; manifest update on push
 │   ├── rm.go
 │   ├── versions.go          # gosf versions <project>:<path>
 │   ├── projects.go
@@ -148,8 +148,9 @@ gosf/
 │   ├── wiki_mv.go           # gosf wiki mv (rename)
 │   ├── wiki_add.go          # gosf wiki add — [[wikis]] manifest entry
 │   ├── wiki_manifest.go     # fetchWikiRemoteState + wikiScanCache + canSkipWikiHistory (scan)
-│   ├── wiki_sync.go         # processWikiPushEntry/processWikiPullEntry, wikiEntryPlan, atomic write
-│   ├── gate.go              # state-based safety: divergenceError, entryPlan, push-plan helpers
+│   ├── wiki_sync.go         # executeWikiEntry, wikiEntryPlan, atomic write
+│   ├── gate.go              # state-based safety: syncAction + sync/push/pullDecision, divergenceError, entryPlan
+│   ├── scan.go              # shared concurrent manifest scan (sync/push/pull)
 │   ├── prompt.go            # printPushPlan, confirmation/TTY helpers
 │   ├── auth_helpers.go      # friendlyAuthError (401/403 → auth hint)
 │   └── manifest_helpers.go  # computeLocalMD5, localFileMatches, fileVersionsToRemote, latestRemoteVersion
@@ -356,13 +357,19 @@ component (child node) GUID. The path is resolved under `xyz34`.
 id = "abc12"          # default project GUID for entries that omit project field
 
 [[files]]
-local     = "data/raw/counts.h5"    # path relative to repo root
-remote    = "/data/raw/counts.h5"   # path within OSF Storage
-direction = "pull"                  # REQUIRED: "push", "pull", or "both"
-version   = 3                       # pinned OSF version number; 0 = not yet pushed
-md5       = "d41d8cd98f00b204e9800998ecf8427e"  # MD5 of pinned version; "" if version=0
-project   = "xyz89"                 # optional per-entry override of [project].id
+local   = "data/raw/counts.h5"    # path relative to repo root
+remote  = "/data/raw/counts.h5"   # path within OSF Storage
+version = 3                       # pinned OSF version number; 0 = not yet pushed
+md5     = "d41d8cd98f00b204e9800998ecf8427e"  # MD5 of pinned version; "" if version=0
+project = "xyz89"                 # optional per-entry override of [project].id
 ```
+
+**There is no `direction` field** (removed in #81, which finished #38). What a
+transfer should do is decided at the moment of the transfer from the L/B/R
+comparison; a standing per-entry default could only block transfers that were
+unambiguously safe. Manifests written by gosf ≤1.9 still carry the key: `Load`
+counts it via the pure `LegacyDirectionCount`, warns once, and ignores it, and
+`Save` drops it.
 
 Wiki pages are tracked with `[[wikis]]` entries, which mirror `[[files]]` but
 address a named wiki page instead of a storage path:
@@ -371,14 +378,12 @@ address a named wiki page instead of a storage path:
 [[wikis]]
 local     = "docs/home.md"   # markdown file, relative to repo root
 page      = "home"           # wiki page name on OSF
-direction = "both"           # push | pull | both (required)
 version   = 3                # pinned wiki version identifier; 0 = not yet pushed
 md5       = "…"              # MD5 of the pinned version's content, computed by gosf
 project   = "xyz89"          # optional per-entry override
 ```
 
 Validation on load:
-- `direction` must be present on every file **and** wiki entry — missing = load error.
 - No duplicate `local` paths — **across `[[files]]` and `[[wikis]]` together**.
 - No duplicate `(project, remote)` pairs; no duplicate `(project, page)` pairs.
 - Wiki page names obey OSF rules (non-blank, no `/`, ≤100 chars).
@@ -444,24 +449,32 @@ Classifying a manifest against the remote is the dominant cost of `sync`/`status
 
 ### State-based safety (gate matrix)
 
-`direction` is a **default intent** (what `sync` does by default), not a lock.
-Safety comes from state-based gates at the moment of a destructive action, keyed
-on how many sides diverged from the baseline:
+Safety comes entirely from state-based gates evaluated at the moment of a
+destructive action, keyed on how many sides diverged from the baseline. Nothing
+recorded in the manifest steers a transfer:
 
-| L vs B | R vs B | `push` | `pull` |
-|--------|--------|--------|--------|
-| L=B | R=B | no-op | no-op |
-| unpinned, L=R | — | pin, no transfer (`PIN_ONLY`) | pin, no transfer (`PIN_ONLY`) |
-| L≠B | R=B | real update (confirm) | would clobber local → skip unless `--force` |
-| L=B | R≠B | rollback → refuse unless `--force` | fast-forward (safe), re-pin |
-| L≠B | R≠B | `DIVERGED` → fail hard, `--resolve=ours` | `DIVERGED` → fail hard, `--resolve=theirs` |
+| L vs B | R vs B | `sync` | `push` | `pull` |
+|--------|--------|--------|--------|--------|
+| L=B | R=B | no-op | no-op | no-op |
+| unpinned, L=R | — | pin, no transfer (`PIN_ONLY`) | pin | pin |
+| local absent | exists | download + pin (`MISSING`) | · skip | download + pin |
+| L≠B | R=B | report, exit 1 (`AHEAD`) | real update (confirm) | skip unless `--force` |
+| L=B | R≠B | fast-forward, re-pin | skip unless `--force` (rollback) | fast-forward, re-pin |
+| L≠B | R≠B | `DIVERGED` → fail hard, `--resolve` | `DIVERGED` → `--resolve=ours` | `DIVERGED` → `--resolve=theirs` |
+
+The three policies are the pure, table-tested `syncDecision`/`pushDecision`/
+`pullDecision` in `cmd/gate.go`; they return a `syncAction`, and the single
+executor `executeEntry` (`cmd/sync.go`, `executeWikiEntry` for pages) performs
+it. That split is why a file and a wiki page in the same state now reconcile the
+same way, and why `sync`, `push`, and `pull` cannot drift apart.
 
 - **Idempotent transfers**: explicit `pull`/`push` skip the byte transfer when the
   local file already matches the remote MD5 (`localFileMatches`,
   `redundantOverwrite` in `cmd/`). Manifest-driven transfers pin without
   transferring in the `PIN_ONLY` state (`pinEntry` in `cmd/sync.go`).
-- **`--force`** authorizes a remote-newer/behind rollback (a deliberate, unilateral
-  overwrite of a newer remote version). It does **not** cover divergence.
+- **`--force`** on `sync`/`pull` discards local modifications, restoring the
+  tracked version from OSF; on `push` it authorizes a deliberate rollback over a
+  newer remote version. It does **not** cover divergence.
 - **`--yes`** bypasses the push confirmation prompt for *safe* actions (new file,
   real update) without authorizing a rollback.
 - **`--resolve=ours|theirs`** is the only way through a `DIVERGED` entry: `ours`
@@ -492,9 +505,8 @@ on how many sides diverged from the baseline:
 ### `gosf add` (`cmd/add.go`)
 
 ```
-gosf add <local-path> <project>:<remote-path> [--direction=push|pull|both]
+gosf add <local-path> <project>:<remote-path>
 ```
-- Default direction: push.
 - Creates .gosf/gosf.toml if absent.
 - Errors if local path already in manifest.
 - Fetches remote version+MD5 if file exists; writes version=0, md5="" otherwise.
@@ -506,29 +518,37 @@ gosf add <local-path> <project>:<remote-path> [--direction=push|pull|both]
 - Fetches remote versions unless `--no-check-remote` — **including for unpinned
   (version = 0) entries**, so an already-identical file reports `PIN_ONLY` instead
   of a blanket "never pushed". Status is **read-only**: it reports, never mutates.
-- Tabular output: DIR / STATUS / LOCAL PATH / VER / DETAIL.
+- Tabular output: STATUS / LOCAL PATH / VER / DETAIL.
 - Exit code 0 only if all entries are `IN_SYNC` (`statusIsInSync`); exit code 1
   otherwise (CI-friendly). `PIN_ONLY` and `DIVERGED` count as not-in-sync.
-- `--output=json` emits array of `{path, direction, state, declared_version, remote_latest_version}`.
+- `--output=json` emits array of `{path, kind, state, declared_version, remote_latest_version}`.
 
 ### `gosf sync` (`cmd/sync.go`)
 
-Non-interactive by default: push-eligible entries (direction=push or both) push;
-pull-only entries (direction=pull) pull. Two passes — classify all, then a
-divergence/rollback **pre-flight** (fail hard before any transfer), then execute.
+Non-interactive. Three passes — `scanEntries`/`scanWikiEntries` classify all,
+`syncDecision` picks each entry's action, a divergence **pre-flight** fails hard
+before any transfer, then `executeEntry`/`executeWikiEntry` run.
 
-| State              | Push action | Pull action |
-|--------------------|-------------|-------------|
-| IN_SYNC            | ✓ skip | ✓ skip |
-| PIN_ONLY           | pin, no transfer | pin, no transfer |
-| AHEAD_OF_MANIFEST  | push new version | skip unless `--force` (would clobber local) |
-| REMOTE_NEWER       | refuse unless `--force` (rollback) | fast-forward + re-pin |
-| BEHIND             | refuse unless `--force` (rollback) | download baseline / advance |
-| NOT_PUSHED (exists)| push, set manifest | · skip |
-| MISSING            | ✗ skip | download + pin |
-| DIVERGED           | fail hard, `--resolve=ours` | fail hard, `--resolve=theirs` |
+| State               | `sync` action |
+|---------------------|---------------|
+| IN_SYNC             | ✓ skip |
+| PIN_ONLY            | pin, no transfer |
+| MISSING             | download latest + pin — **no flag required** |
+| BEHIND              | fast-forward to latest, re-pin |
+| REMOTE_NEWER        | fast-forward to latest, re-pin |
+| NOT_PUSHED (exists) | upload, set manifest |
+| NOT_PUSHED (absent) | · skip — nothing anywhere |
+| AHEAD_OF_MANIFEST   | report only, no transfer; run exits 1 (`--force` → restore) |
+| DIVERGED            | fail hard, `--resolve=ours\|theirs` honored as given |
 
-Flags: `--force`, `--resolve=ours|theirs`, `--dry-run`, `--no-check-remote`.
+`AHEAD_OF_MANIFEST` is a **reporting no-op with a non-zero exit**, not a hard
+error: unlike `DIVERGED` it only risks local work (on restore) or an unwanted
+remote version (on push), both recoverable, so it must not fail a whole bulk run.
+`MISSING` downloads unconditionally — writing a file that does not exist destroys
+nothing, and requiring a flag for it was the bug in #81.
+
+Flags: `--force`, `--resolve=ours|theirs`, `--dry-run`, `--no-check-remote`,
+`--jobs`/`-j`.
 
 ### `gosf push` manifest integration
 
@@ -539,11 +559,14 @@ Flags: `--force`, `--resolve=ours|theirs`, `--dry-run`, `--no-check-remote`.
   prompts for confirmation on a TTY. `--yes`/`--force` bypass the prompt; in
   `--output=json` mode `--force` is **mandatory** (same rule as `gosf rm`), and a
   non-TTY run without `--yes`/`--force` refuses rather than hang.
+  Bare push selects entries by state (`pushDecision`): AHEAD / NOT_PUSHED with
+  local content / PIN_ONLY, plus REMOTE_NEWER and BEHIND under `--force` (a
+  deliberate rollback). An entry whose local content is already on the remote
+  carries no work to publish, so it is skipped rather than failing the run.
 - **Explicit `gosf push <src> <project>:<path>`** keeps the `--conflict`
   behavior; it additionally skips an overwrite that would merely re-mint identical
-  bytes, and still refuses when the tracked entry has `direction=pull`.
-- After a successful push, if the entry has `direction=push` or `both` and
-  `UploadResult.Version > 0` → update manifest atomically.
+  bytes.
+- After a successful push, `UploadResult.Version > 0` → update manifest atomically.
 
 ### Anonymous reads
 
@@ -561,7 +584,7 @@ non-TTY). Detects state and enters at the first unsatisfied phase: **auth**
 (attach a GUID: `--project`, a numbered pick from `client.GetUserNodes`, or typed)
 → **select** (candidates from `internal/gitutil.Candidates`, the bubbletea tree
 picker in `internal/picker`, remote base via `--remote-base`/prompt) → writes
-`direction=push` entries and **stops**, pointing at `gosf sync`. Pure helpers
+manifest entries and **stops**, pointing at `gosf sync`. Pure helpers
 (`untrackedCandidates`, `remotePath`) and the tree model are unit-tested; the
 guard paths (non-TTY / `--output=json`) are integration-tested; and the full
 interactive flow is driven end-to-end over a **pseudo-terminal** in
@@ -798,6 +821,12 @@ Strip the `Authorization` header when following redirects to a different host.
 - `--dry-run` lists what would be downloaded
 - `--version=<n>` downloads a specific historical version; validates version exists before transferring
 - `--version` is invalid for directory/tree targets (errors early)
+- `--track-only` records manifest entries for everything the target matches and
+  transfers nothing (version + MD5 come from the version listing, the only source
+  available with no local copy — `pullSession.pinFor`). Conflicts with
+  `--no-track` and requires a path argument. Entries land as `MISSING`, so a
+  plain `gosf sync` fetches them; this is how remote files that nothing tracks
+  become visible to `sync`, which only ever iterates manifest entries.
 
 **`push`**
 - Split dest path into `parentDir` + `filename`; fail if parent doesn't exist in OSF

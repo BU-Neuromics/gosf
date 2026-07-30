@@ -7,6 +7,8 @@ import (
 	"strings"
 
 	"github.com/pelletier/go-toml/v2"
+
+	"github.com/BU-Neuromics/gosf/internal/log"
 )
 
 // Manifest is the in-memory representation of gosf.toml.
@@ -22,13 +24,19 @@ type ProjectConfig struct {
 }
 
 // Entry describes one file tracked by the manifest.
+//
+// There is deliberately no direction field: what a transfer should do is
+// decided at the moment of the transfer from the three-way comparison of local
+// content, the pinned baseline, and the remote (see ClassifyFile). A standing
+// per-entry default recorded weeks earlier cannot know that, and the field's
+// only observable effect was to block transfers that were unambiguously safe
+// (issue #81). Manifests that still carry the key load fine; it is ignored.
 type Entry struct {
-	Local     string `toml:"local"`
-	Remote    string `toml:"remote"`
-	Direction string `toml:"direction"`
-	Version   int    `toml:"version"`
-	MD5       string `toml:"md5"`
-	Project   string `toml:"project,omitempty"`
+	Local   string `toml:"local"`
+	Remote  string `toml:"remote"`
+	Version int    `toml:"version"`
+	MD5     string `toml:"md5"`
+	Project string `toml:"project,omitempty"`
 }
 
 // ResolveProject returns the project GUID for this entry: the entry's own
@@ -45,12 +53,11 @@ func (e Entry) ResolveProject(defaultID string) string {
 // a named wiki page rather than a storage path. The MD5 is computed by gosf
 // from the page content (OSF exposes no content hash for wiki versions).
 type WikiEntry struct {
-	Local     string `toml:"local"`
-	Page      string `toml:"page"`
-	Direction string `toml:"direction"`
-	Version   int    `toml:"version"`
-	MD5       string `toml:"md5"`
-	Project   string `toml:"project,omitempty"`
+	Local   string `toml:"local"`
+	Page    string `toml:"page"`
+	Version int    `toml:"version"`
+	MD5     string `toml:"md5"`
+	Project string `toml:"project,omitempty"`
 }
 
 // ResolveProject returns the project GUID for this wiki entry.
@@ -93,10 +100,53 @@ func Load(path string) (*Manifest, error) {
 		return nil, fmt.Errorf("parsing %s: %w", path, err)
 	}
 
+	if n := LegacyDirectionCount(data); n > 0 {
+		log.Warnf("%s: 'direction' is no longer used (%d entr%s) and will be dropped when the manifest is next written — "+
+			"gosf now decides each transfer from local/pinned/remote state; run 'gosf status' to see it",
+			path, n, plural(n, "y", "ies"))
+	}
+
 	if err := validate(&m); err != nil {
 		return nil, err
 	}
 	return &m, nil
+}
+
+// LegacyDirectionCount reports how many entries in raw manifest bytes still
+// carry the retired `direction` key. Unparseable input reports 0 — Load surfaces
+// the parse error itself, and the warning must never be the thing that fails.
+func LegacyDirectionCount(data []byte) int {
+	var probe struct {
+		Files []struct {
+			Direction string `toml:"direction"`
+		} `toml:"files"`
+		Wikis []struct {
+			Direction string `toml:"direction"`
+		} `toml:"wikis"`
+	}
+	if err := toml.Unmarshal(data, &probe); err != nil {
+		return 0
+	}
+	n := 0
+	for _, f := range probe.Files {
+		if f.Direction != "" {
+			n++
+		}
+	}
+	for _, w := range probe.Wikis {
+		if w.Direction != "" {
+			n++
+		}
+	}
+	return n
+}
+
+// plural picks a suffix for n.
+func plural(n int, one, many string) string {
+	if n == 1 {
+		return one
+	}
+	return many
 }
 
 // Save writes the manifest to path atomically (temp file + rename).
@@ -191,17 +241,6 @@ func validate(m *Manifest) error {
 	seenRemote := make(map[string]bool) // key: "project|remote"
 
 	for i, f := range m.Files {
-		// direction is required
-		if f.Direction == "" {
-			return fmt.Errorf("files[%d] (%q): direction is required", i, f.Local)
-		}
-		switch f.Direction {
-		case "push", "pull", "both":
-		default:
-			return fmt.Errorf("files[%d] (%q): direction %q is invalid (must be push, pull, or both)",
-				i, f.Local, f.Direction)
-		}
-
 		// Resolve project
 		proj := f.ResolveProject(m.Project.ID)
 		if proj == "" {
@@ -225,16 +264,6 @@ func validate(m *Manifest) error {
 
 	seenPage := make(map[string]bool) // key: "project|page"
 	for i, w := range m.Wikis {
-		if w.Direction == "" {
-			return fmt.Errorf("wikis[%d] (%q): direction is required", i, w.Local)
-		}
-		switch w.Direction {
-		case "push", "pull", "both":
-		default:
-			return fmt.Errorf("wikis[%d] (%q): direction %q is invalid (must be push, pull, or both)",
-				i, w.Local, w.Direction)
-		}
-
 		proj := w.ResolveProject(m.Project.ID)
 		if proj == "" {
 			return fmt.Errorf("wikis[%d] (%q): no project GUID — set [project].id or per-entry project field",

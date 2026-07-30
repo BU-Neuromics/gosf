@@ -76,7 +76,6 @@ func TestInit_PreservesFilesWithNoProject(t *testing.T) {
 [[files]]
 local     = "data/counts.h5"
 remote    = "/data/counts.h5"
-direction = "push"
 version   = 0
 md5       = ""
 project   = "xyz89"

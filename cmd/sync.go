@@ -6,10 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync/atomic"
 
 	"github.com/spf13/cobra"
-	"golang.org/x/sync/errgroup"
 
 	"github.com/BU-Neuromics/gosf/internal/client"
 	"github.com/BU-Neuromics/gosf/internal/config"
@@ -42,15 +40,25 @@ func scanConcurrency(jobs int) int {
 var syncCmd = &cobra.Command{
 	Use:   "sync",
 	Short: "Sync local files with OSF according to .gosf/gosf.toml",
-	Long: `Sync files declared in .gosf/gosf.toml between local storage and OSF.
+	Long: `Reconcile the files and wiki pages declared in .gosf/gosf.toml with OSF.
 
-Default behavior: push all push-eligible entries (direction=push or direction=both)
-and pull all pull-eligible entries (direction=pull or direction=both) that are
-missing or behind.
+Each entry is classified by comparing local content, the pinned baseline, and
+the remote, and the one correct action for that state is taken:
+
+  IN_SYNC             nothing
+  PIN_ONLY            record the version + md5; no transfer
+  MISSING             download it (needs no flag — nothing local is at risk)
+  BEHIND              fast-forward to the remote's latest
+  REMOTE_NEWER        fast-forward to the remote's latest
+  NOT_PUSHED          upload it, when the file exists locally
+  AHEAD_OF_MANIFEST   report it and exit non-zero; both publishing and
+                      discarding are defensible, so sync picks neither
+  DIVERGED            fail before any transfer; pass --resolve to pick a side
 
 Examples:
-  gosf sync                         # push and pull all tracked files
-  gosf sync --force                 # overwrite locally modified pull files
+  gosf sync                         # reconcile everything with a clear answer
+  gosf sync --force                 # also discard local edits, restoring from OSF
+  gosf sync --resolve=theirs        # resolve diverged entries by taking the remote
   gosf sync --dry-run               # show what would happen
   gosf sync --no-check-remote       # faster, but skips BEHIND/REMOTE_NEWER detection`,
 	SilenceUsage: true,
@@ -92,107 +100,40 @@ Examples:
 		jsonResults := make([]output.SyncItem, 0)
 		manifestChanged := false
 
-		// Pass 1: classify every entry (no transfers yet), concurrently. This is
-		// the phase that used to run silently and serially; a bounded worker pool
+		// Pass 1: classify every entry (no transfers yet). A bounded worker pool
 		// overlaps the OSF round-trips, and per-entry progress is logged so a
 		// large manifest visibly makes headway instead of appearing stalled.
-		total := len(m.Files)
-		plans := make([]entryPlan, total)
-		var scanned int64
-		g, gctx := errgroup.WithContext(cmd.Context())
-		g.SetLimit(scanConcurrency(syncJobs))
-		for i := range m.Files {
-			i := i
-			g.Go(func() error {
-				entry := &m.Files[i]
-				proj := entry.ResolveProject(m.Project.ID)
-				localAbs := filepath.Join(repoRoot, entry.Local)
-
-				localMD5, err := computeLocalMD5(localAbs)
-				if err != nil {
-					return fmt.Errorf("computing MD5 for %s: %w", entry.Local, err)
-				}
-
-				isPushEligible := entry.Direction == "push" || entry.Direction == "both"
-				isPullEligible := entry.Direction == "pull" || entry.Direction == "both"
-
-				var remoteVersions []manifest.RemoteVersion
-				var resolvedItem *client.FileItem
-				// Resolve for content comparison (all entries when checking the
-				// remote) and to obtain a download URL (pull-eligible entries).
-				contactsRemote := !syncNoCheckRemote || isPullEligible
-				if contactsRemote {
-					resolvedItem, remoteVersions = fetchRemoteState(gctx, res, osfClient, proj, *entry, localMD5, !syncNoCheckRemote)
-					log.Infof("scanned remote %d/%d  %s", atomic.AddInt64(&scanned, 1), total, entry.Local)
-				} else {
-					log.Debugf("classifying %d/%d  %s (no remote check)", atomic.AddInt64(&scanned, 1), total, entry.Local)
-				}
-
-				state := manifest.ClassifyFile(*entry, localMD5, remoteVersions, syncNoCheckRemote)
-				plans[i] = entryPlan{
-					entry: entry, proj: proj, localAbs: localAbs, localMD5: localMD5,
-					state: state, resolvedItem: resolvedItem, remoteVersions: remoteVersions,
-					treatAsPush: isPushEligible, treatAsPull: !isPushEligible && isPullEligible,
-				}
-				return nil
-			})
+		plans, err := scanEntries(cmd.Context(), m, repoRoot, res, osfClient, syncJobs, syncNoCheckRemote)
+		if err != nil {
+			return err
 		}
-		if err := g.Wait(); err != nil {
+		wikiPlans, err := scanWikiEntries(cmd.Context(), m, repoRoot, osfClient, syncNoCheckRemote)
+		if err != nil {
 			return err
 		}
 
-		// Classify wiki entries (serial pass; the listing cache collapses
-		// repeated per-project fetches, and there are usually only a handful).
-		wcache := newWikiScanCache(osfClient)
-		wikiPlans := make([]wikiEntryPlan, len(m.Wikis))
-		for i := range m.Wikis {
-			we := &m.Wikis[i]
-			proj := we.ResolveProject(m.Project.ID)
-			localAbs := filepath.Join(repoRoot, we.Local)
-			localMD5, err := wikiLocalMD5(localAbs)
-			if err != nil {
-				return fmt.Errorf("computing MD5 for %s: %w", we.Local, err)
-			}
-
-			isPushEligible := we.Direction == "push" || we.Direction == "both"
-			isPullEligible := we.Direction == "pull" || we.Direction == "both"
-
-			var page *client.Wiki
-			var remoteVersions []manifest.RemoteVersion
-			if !syncNoCheckRemote {
-				page, remoteVersions, err = fetchWikiRemoteState(cmd.Context(), wcache, osfClient, proj, *we, localMD5)
-				if err != nil {
-					return err
-				}
-				log.Infof("scanned wiki %s", we.Local)
-			}
-			state := manifest.ClassifyFile(we.BaselineEntry(), localMD5, remoteVersions, syncNoCheckRemote)
-			wikiPlans[i] = wikiEntryPlan{
-				entry: we, proj: proj, localAbs: localAbs, localMD5: localMD5,
-				state: state, page: page, remoteVersions: remoteVersions,
-				treatAsPush: isPushEligible, treatAsPull: !isPushEligible && isPullEligible,
-			}
+		// Decide every entry's action up front so the pre-flight sees the whole
+		// run before any bytes move.
+		actions := make([]syncAction, len(plans))
+		for i, p := range plans {
+			actions[i] = syncDecision(p.state, p.localMD5 != "", syncForce, syncResolve)
+		}
+		wikiActions := make([]syncAction, len(wikiPlans))
+		for i, p := range wikiPlans {
+			wikiActions[i] = syncDecision(p.state, p.localMD5 != "", syncForce, syncResolve)
 		}
 
-		// Pre-flight: refuse to transfer anything if any entry has diverged
-		// (and no applicable --resolve). Fail hard before touching bytes so a
-		// bulk sync never applies a partial, half-resolved state.
+		// Pre-flight: refuse to transfer anything if any entry has diverged and
+		// no --resolve was given. Fail hard before touching bytes so a bulk sync
+		// never applies a partial, half-resolved state.
 		var blocked []string
-		for _, p := range plans {
-			if p.state != manifest.StateDivergent {
-				continue
-			}
-			resolved := (p.treatAsPush && syncResolve == "ours") || (p.treatAsPull && syncResolve == "theirs")
-			if !resolved {
+		for i, p := range plans {
+			if actions[i] == actionBlocked {
 				blocked = append(blocked, divergenceError(*p.entry, p.proj, p.localMD5, p.remoteVersions).Error())
 			}
 		}
-		for _, p := range wikiPlans {
-			if p.state != manifest.StateDivergent {
-				continue
-			}
-			resolved := (p.treatAsPush && syncResolve == "ours") || (p.treatAsPull && syncResolve == "theirs")
-			if !resolved {
+		for i, p := range wikiPlans {
+			if wikiActions[i] == actionBlocked {
 				blocked = append(blocked, wikiDivergenceError(*p.entry, p.proj, p.localMD5, p.remoteVersions).Error())
 			}
 		}
@@ -201,18 +142,13 @@ Examples:
 		}
 
 		// Pass 2: execute.
-		for _, p := range plans {
-			var action string
-			var changed bool
-			var perr error
-			switch {
-			case p.treatAsPush:
-				action, changed, perr = processPushEntry(cmd.Context(), p.entry, p.proj, p.localAbs, p.localMD5, p.state, res, wb, osfClient, showBar, syncDryRun, syncForce, syncResolve, p.remoteVersions)
-			case p.treatAsPull:
-				action, changed, perr = processPullEntry(cmd.Context(), p.entry, p.proj, p.localAbs, p.localMD5, p.state, p.resolvedItem, wb, osfClient, repoRoot, showBar, syncDryRun, syncForce, syncResolve, p.remoteVersions)
-			default:
-				continue
+		deps := transferDeps{res: res, wb: wb, osf: osfClient, showBar: showBar, dryRun: syncDryRun}
+		reported := 0
+		for i, p := range plans {
+			if actions[i] == actionReport {
+				reported++
 			}
+			action, changed, perr := executeEntry(cmd.Context(), p, actions[i], deps)
 			if perr != nil {
 				return perr
 			}
@@ -225,18 +161,11 @@ Examples:
 		}
 
 		// Execute wiki entries.
-		for _, p := range wikiPlans {
-			var action string
-			var changed bool
-			var perr error
-			switch {
-			case p.treatAsPush:
-				action, changed, perr = processWikiPushEntry(cmd.Context(), osfClient, p.entry, p.proj, p.localAbs, p.localMD5, p.state, p.page, syncDryRun, syncForce, syncResolve, p.remoteVersions)
-			case p.treatAsPull:
-				action, changed, perr = processWikiPullEntry(cmd.Context(), osfClient, p.entry, p.proj, p.localAbs, p.localMD5, p.state, p.page, syncDryRun, syncForce, syncResolve, p.remoteVersions)
-			default:
-				continue
+		for i, p := range wikiPlans {
+			if wikiActions[i] == actionReport {
+				reported++
 			}
+			action, changed, perr := executeWikiEntry(cmd.Context(), osfClient, p, wikiActions[i], syncDryRun)
 			if perr != nil {
 				return perr
 			}
@@ -255,71 +184,127 @@ Examples:
 		}
 
 		if jsonMode {
-			return output.PrintJSON(os.Stdout, jsonResults)
+			if err := output.PrintJSON(os.Stdout, jsonResults); err != nil {
+				return err
+			}
 		}
 
+		// Entries that were reported rather than reconciled leave the working
+		// tree out of sync, so the run is not a success — but it is not a hard
+		// error either: nothing was left half-applied, and both remedies are
+		// recoverable. Signal it the way `gosf status` does.
+		if reported > 0 {
+			return &exitCodeError{code: 1}
+		}
 		return nil
 	},
 }
 
-// processPushEntry handles a push-eligible entry. Returns the action taken,
-// whether the manifest was mutated, and any error. force authorizes a
-// remote-newer/behind rollback; resolve="ours" resolves a divergence by taking
-// the local copy. showBar toggles the live transfer progress bar.
-func processPushEntry(
-	ctx context.Context,
-	entry *manifest.Entry,
-	proj, localAbs, localMD5 string,
-	state manifest.FileState,
-	res *resolver.Resolver,
-	wb *client.WaterbutlerClient,
-	osfClient *client.OSFClient,
-	showBar, dryRun, force bool,
-	resolve string,
-	remoteVersions []manifest.RemoteVersion,
-) (action string, changed bool, err error) {
-	switch state {
+// transferDeps bundles the clients and run-wide switches an entry needs to
+// execute its chosen action.
+type transferDeps struct {
+	res     *resolver.Resolver
+	wb      *client.WaterbutlerClient
+	osf     *client.OSFClient
+	showBar bool
+	dryRun  bool
+}
+
+// executeEntry carries out one entry's chosen action. Which action that is has
+// already been decided by syncDecision/pushDecision/pullDecision; this function
+// only performs it, so every command shares identical transfer behaviour.
+func executeEntry(ctx context.Context, p entryPlan, act syncAction, d transferDeps) (action string, changed bool, err error) {
+	entry := p.entry
+	log.Debugf("%s: state=%s action=%s", entry.Local, p.state, act)
+
+	switch act {
+	case actionPin:
+		return pinEntry(entry, p.remoteVersions, d.dryRun)
+
+	case actionPush:
+		return pushFile(ctx, entry, p.proj, p.localAbs, d.res, d.wb, d.showBar, d.dryRun)
+
+	case actionPull:
+		item, versions, rerr := resolveForDownload(ctx, p, d)
+		if rerr != nil || item == nil {
+			log.Warnf("%s: not found on the remote, skipping", entry.Local)
+			return "skipped_unresolved", false, nil
+		}
+		return downloadAndPin(ctx, entry, item, d.wb, p.localAbs, 0, true, versions, d.showBar, d.dryRun, pullActionLabel(p.state))
+
+	case actionRestore:
+		item, versions, rerr := resolveForDownload(ctx, p, d)
+		if rerr != nil || item == nil {
+			log.Warnf("%s: not found on the remote, skipping", entry.Local)
+			return "skipped_unresolved", false, nil
+		}
+		log.Warnf("overwriting locally modified file: %s", entry.Local)
+		if entry.Version > 0 {
+			return downloadAndPin(ctx, entry, item, d.wb, p.localAbs, entry.Version, false, versions, d.showBar, d.dryRun, "pull_force")
+		}
+		return downloadAndPin(ctx, entry, item, d.wb, p.localAbs, 0, true, versions, d.showBar, d.dryRun, "pull_force")
+
+	case actionReport:
+		// L ≠ B with R = B: local holds work that is on neither the pin nor the
+		// remote. Publishing it and discarding it are both defensible, and no
+		// hash comparison can tell them apart — so say so and touch nothing.
+		log.Warnf("%s: locally modified (differs from pinned v%d and from the remote) — "+
+			"'gosf push' to publish it, 'gosf pull --force' to discard it", entry.Local, entry.Version)
+		return "skipped_modified", false, nil
+
+	case actionBlocked:
+		return "", false, divergenceError(*entry, p.proj, p.localMD5, p.remoteVersions)
+	}
+
+	// actionNone: nothing to reconcile.
+	switch p.state {
 	case manifest.StateInSync:
 		log.Debugf("in sync: %s (v%d)", entry.Local, entry.Version)
 		return "in_sync", false, nil
-
 	case manifest.StateMissing:
-		log.Warnf("%s: missing locally, skipping", entry.Local)
 		return "skipped_missing", false, nil
-
 	case manifest.StateNotPushed:
-		if _, statErr := os.Stat(localAbs); os.IsNotExist(statErr) {
-			log.Debugf("%s: not found locally, skipping", entry.Local)
-			return "skipped_not_found", false, nil
-		}
-		return pushFile(ctx, entry, proj, localAbs, res, wb, showBar, dryRun)
-
-	case manifest.StatePinOnly:
-		// Local content already equals the remote — record the pin, no upload.
-		return pinEntry(entry, remoteVersions, dryRun)
-
-	case manifest.StateAheadOfManifest:
-		// Only local moved (L≠B, R=B) — a real update. Safe to push.
-		return pushFile(ctx, entry, proj, localAbs, res, wb, showBar, dryRun)
-
-	case manifest.StateRemoteNewer, manifest.StateBehind:
-		// Pushing here buries a newer/different remote version — a rollback.
-		if !force {
-			latest := latestRemoteVersionInfo(remoteVersions)
-			return "", false, fmt.Errorf(
-				"push refused: %s would roll the remote back over v%d (pinned v%d); "+
-					"pass --force to overwrite the remote deliberately",
-				entry.Local, latest.Version, entry.Version)
-		}
-		return pushFile(ctx, entry, proj, localAbs, res, wb, showBar, dryRun)
-
-	case manifest.StateDivergent:
-		if resolve == "ours" {
-			return pushFile(ctx, entry, proj, localAbs, res, wb, showBar, dryRun)
-		}
-		return "", false, divergenceError(*entry, proj, localMD5, remoteVersions)
+		log.Debugf("%s: nothing local and nothing on the remote", entry.Local)
+		return "skipped_not_found", false, nil
 	}
 	return "noop", false, nil
+}
+
+// pullActionLabel names a download for the JSON action_taken field, keeping the
+// distinction between restoring a missing file and advancing a stale one.
+func pullActionLabel(state manifest.FileState) string {
+	switch state {
+	case manifest.StateRemoteNewer:
+		return "fast_forward"
+	case manifest.StateDivergent:
+		return "pull_theirs"
+	default:
+		return "pull"
+	}
+}
+
+// resolveForDownload supplies the remote file and its versions for a download,
+// filling in whatever the scan left out. A --no-check-remote scan resolves
+// nothing, and a bare push scan needs no download URL; rather than make every
+// caller pre-fetch, the fetch happens here, only for entries that actually
+// transfer.
+func resolveForDownload(ctx context.Context, p entryPlan, d transferDeps) (*client.FileItem, []manifest.RemoteVersion, error) {
+	item := p.resolvedItem
+	if item == nil {
+		resolved, err := d.res.Resolve(ctx, p.proj, p.entry.Remote)
+		if err != nil {
+			log.Debugf("%s: not resolved on remote (%v)", p.entry.Remote, err)
+			return nil, nil, err
+		}
+		item = &resolved
+	}
+	versions := p.remoteVersions
+	if len(versions) == 0 {
+		if fvs, err := d.osf.GetFileVersions(ctx, item.ID); err == nil {
+			versions = fileVersionsToRemote(fvs)
+		}
+	}
+	return item, versions, nil
 }
 
 // pinEntry records the latest remote version+MD5 into the manifest entry without
@@ -415,77 +400,6 @@ func uploadTarget(ctx context.Context, entry *manifest.Entry, proj string, res *
 	return client.AppendUploadName(base, filename), false, nil
 }
 
-// processPullEntry handles a pull-eligible entry. force authorizes overwriting
-// locally-modified files; resolve="theirs" resolves a divergence by taking the
-// remote copy. showBar toggles the live transfer progress bar.
-func processPullEntry(
-	ctx context.Context,
-	entry *manifest.Entry,
-	proj, localAbs, localMD5 string,
-	state manifest.FileState,
-	resolvedItem *client.FileItem,
-	wb *client.WaterbutlerClient,
-	osfClient *client.OSFClient,
-	repoRoot string,
-	showBar, dryRun, force bool,
-	resolve string,
-	remoteVersions []manifest.RemoteVersion,
-) (action string, changed bool, err error) {
-	switch state {
-	case manifest.StateInSync:
-		log.Debugf("in sync: %s (v%d)", entry.Local, entry.Version)
-		return "in_sync", false, nil
-
-	case manifest.StatePinOnly:
-		// Local content already equals the remote — record the pin, no download.
-		return pinEntry(entry, remoteVersions, dryRun)
-
-	case manifest.StateMissing, manifest.StateBehind:
-		if resolvedItem == nil {
-			return "skipped_unresolved", false, nil
-		}
-		// Restore the pinned baseline for pinned entries; for unpinned entries
-		// (no baseline) fetch the latest and pin to it.
-		if entry.Version > 0 {
-			return downloadAndPin(ctx, entry, resolvedItem, wb, localAbs, entry.Version, false, remoteVersions, showBar, dryRun, "pull")
-		}
-		return downloadAndPin(ctx, entry, resolvedItem, wb, localAbs, 0, true, remoteVersions, showBar, dryRun, "pull")
-
-	case manifest.StateRemoteNewer:
-		// L == B and remote moved ahead — a safe fast-forward. Advance and re-pin.
-		if resolvedItem == nil {
-			return "skipped_unresolved", false, nil
-		}
-		return downloadAndPin(ctx, entry, resolvedItem, wb, localAbs, 0, true, remoteVersions, showBar, dryRun, "fast_forward")
-
-	case manifest.StateAheadOfManifest:
-		if !force {
-			log.Warnf("%s: locally modified, skipping (use --force to overwrite with the pinned version)", entry.Local)
-			return "skipped_modified", false, nil
-		}
-		if resolvedItem == nil {
-			return "skipped_unresolved", false, nil
-		}
-		log.Warnf("overwriting locally modified file: %s", entry.Local)
-		return downloadAndPin(ctx, entry, resolvedItem, wb, localAbs, entry.Version, false, remoteVersions, showBar, dryRun, "pull_force")
-
-	case manifest.StateDivergent:
-		if resolve != "theirs" {
-			return "", false, divergenceError(*entry, proj, localMD5, remoteVersions)
-		}
-		if resolvedItem == nil {
-			return "skipped_unresolved", false, nil
-		}
-		log.Warnf("resolving divergence by taking remote: %s", entry.Local)
-		return downloadAndPin(ctx, entry, resolvedItem, wb, localAbs, 0, true, remoteVersions, showBar, dryRun, "pull_theirs")
-
-	case manifest.StateNotPushed:
-		log.Debugf("%s: not yet pushed", entry.Local)
-		return "skipped_not_pushed", false, nil
-	}
-	return "noop", false, nil
-}
-
 // downloadAndPin downloads a file version to localAbs and optionally updates the
 // manifest pin. When toLatest is true it fetches the latest version (no revision
 // query) and re-pins the entry to the latest version+MD5; otherwise it fetches
@@ -569,7 +483,7 @@ func makeWikiSyncItem(entry *manifest.WikiEntry, state manifest.FileState, actio
 }
 
 func init() {
-	syncCmd.Flags().BoolVar(&syncForce, "force", false, "Overwrite locally modified pull files")
+	syncCmd.Flags().BoolVar(&syncForce, "force", false, "Discard local modifications, restoring the tracked version from OSF")
 	syncCmd.Flags().BoolVar(&syncDryRun, "dry-run", false, "Show what would happen without making changes")
 	syncCmd.Flags().BoolVar(&syncNoCheckRemote, "no-check-remote", false, "Skip remote version lookups (faster, cannot detect BEHIND/REMOTE_NEWER)")
 	syncCmd.Flags().StringVar(&syncResolve, "resolve", "", "Resolve divergence: 'ours' (keep local) or 'theirs' (keep remote)")

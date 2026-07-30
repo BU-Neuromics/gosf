@@ -106,7 +106,6 @@ var statusCmd = &cobra.Command{
 			} else {
 				statusStr, detail := stateDisplay(r.state, r.entry, r.remoteVersions)
 				rows = append(rows, []output.Cell{
-					{Text: r.entry.Direction},
 					{Text: statusStr, Style: stateStyle(r.state)},
 					{Text: r.entry.Local},
 					{Text: verLabel(r.entry.Version)},
@@ -147,7 +146,6 @@ var statusCmd = &cobra.Command{
 						detail = fmt.Sprintf("wiki %q — %s", we.Page, detail)
 					}
 					rows = append(rows, []output.Cell{
-						{Text: we.Direction},
 						{Text: statusStr, Style: stateStyle(state)},
 						{Text: we.Local},
 						{Text: verLabel(we.Version)},
@@ -162,7 +160,7 @@ var statusCmd = &cobra.Command{
 				return err
 			}
 		} else {
-			output.RenderTable(os.Stdout, []string{"DIR", "STATUS", "LOCAL PATH", "VER", "DETAIL"}, rows)
+			output.RenderTable(os.Stdout, []string{"STATUS", "LOCAL PATH", "VER", "DETAIL"}, rows)
 		}
 
 		if !allInSync {
@@ -204,10 +202,10 @@ func stateDisplay(state manifest.FileState, entry manifest.Entry, remoteVersions
 		latest := latestRemoteVersion(remoteVersions)
 		return "BEHIND", fmt.Sprintf("remote is v%d", latest)
 	case manifest.StateAheadOfManifest:
-		if entry.Direction == "pull" {
-			return "~", "locally modified"
-		}
-		return "AHEAD", "unpushed changes"
+		// L ≠ B with R = B: local differs from both the pin and the remote.
+		// Whether that is work to publish or a scratch edit to throw away is
+		// the user's call, so state the fact and name both remedies.
+		return "AHEAD", "locally modified — push to publish, pull --force to discard"
 	case manifest.StateRemoteNewer:
 		latest := latestRemoteVersion(remoteVersions)
 		return "↑", fmt.Sprintf("remote has v%d", latest)
@@ -247,7 +245,6 @@ func buildStatusItem(entry manifest.Entry, state manifest.FileState, remoteVersi
 	item := output.StatusItem{
 		Path:            entry.Local,
 		Kind:            "file",
-		Direction:       entry.Direction,
 		State:           state.String(),
 		DeclaredVersion: entry.Version,
 	}
@@ -261,7 +258,6 @@ func buildWikiStatusItem(entry manifest.WikiEntry, state manifest.FileState, rem
 	item := output.StatusItem{
 		Path:            entry.Local,
 		Kind:            "wiki",
-		Direction:       entry.Direction,
 		State:           state.String(),
 		DeclaredVersion: entry.Version,
 	}

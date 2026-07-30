@@ -244,8 +244,11 @@ func TestPull_AutoTracksFile(t *testing.T) {
 	if !strings.Contains(toml, "/data/counts.h5") {
 		t.Errorf("expected manifest entry for /data/counts.h5:\n%s", toml)
 	}
-	if !strings.Contains(toml, "pull") {
-		t.Errorf("expected direction pull in manifest:\n%s", toml)
+	if !strings.Contains(toml, "version = 1") {
+		t.Errorf("expected the pulled entry to be pinned to v1:\n%s", toml)
+	}
+	if strings.Contains(toml, "direction") {
+		t.Errorf("direction is no longer written to the manifest:\n%s", toml)
 	}
 }
 
@@ -278,7 +281,6 @@ id = "abc12"
 [[files]]
 local = "other/counts.h5"
 remote = "/data/counts.h5"
-direction = "pull"
 version = 0
 md5 = ""
 `
@@ -320,7 +322,6 @@ id = "abc12"
 [[files]]
 local = "data/counts.h5"
 remote = "/data/counts.h5"
-direction = "pull"
 version = 1
 md5 = "%s"
 `, f.VersionMD5(1)))
@@ -348,7 +349,9 @@ func TestPull_BareNoProjectID(t *testing.T) {
 	}
 }
 
-func TestPull_BareSkipsPushEntries(t *testing.T) {
+// A tracked file that exists locally but nowhere on the remote has nothing for
+// a pull to fetch, so bare pull leaves it alone (and does not fail the run).
+func TestPull_BareLeavesUnpushedLocalFileAlone(t *testing.T) {
 	env := newTestEnv(t)
 	env.srv.AddProject("abc12", "Test Project")
 	env.writeFile(".gosf/gosf.toml", `[project]
@@ -357,16 +360,17 @@ id = "abc12"
 [[files]]
 local = "data/push_only.csv"
 remote = "/data/push_only.csv"
-direction = "push"
 version = 0
 md5 = ""
 `)
 	env.writeFile("data/push_only.csv", "data")
 
-	// Bare pull should not touch push-direction entries.
 	_, _, code := env.run("pull", "--quiet")
 	if code != 0 {
-		t.Fatalf("bare pull should succeed even with push-only entries")
+		t.Fatalf("bare pull should succeed when an entry has nothing to fetch")
+	}
+	if env.readFile("data/push_only.csv") != "data" {
+		t.Error("bare pull must not touch a file the remote does not have")
 	}
 }
 
@@ -491,8 +495,8 @@ func TestPush_AutoTracksFile(t *testing.T) {
 	if !strings.Contains(toml, "/data.csv") {
 		t.Errorf("expected /data.csv in gosf.toml:\n%s", toml)
 	}
-	if !strings.Contains(toml, "push") {
-		t.Errorf("expected direction push in gosf.toml:\n%s", toml)
+	if strings.Contains(toml, "direction") {
+		t.Errorf("direction is no longer written to the manifest:\n%s", toml)
 	}
 	if !strings.Contains(toml, "version = 1") {
 		t.Errorf("expected version = 1 in gosf.toml:\n%s", toml)
@@ -524,7 +528,6 @@ id = "abc12"
 [[files]]
 local = "other/data.csv"
 remote = "/data.csv"
-direction = "push"
 version = 0
 md5 = ""
 `)
@@ -550,7 +553,6 @@ id = "abc12"
 [[files]]
 local = "data/report.csv"
 remote = "/data/report.csv"
-direction = "push"
 version = 0
 md5 = ""
 `)
@@ -587,33 +589,73 @@ func TestPush_BarePushNoProjectID(t *testing.T) {
 	}
 }
 
-func TestPush_BarePushSkipsPullEntries(t *testing.T) {
+// Bare push selects the entries that hold local work the remote does not have.
+// A file already byte-identical to the remote carries none, so it is not
+// re-uploaded — selection is by state, never by a field on the entry (#81).
+func TestPush_BareSkipsEntriesWithNothingToPublish(t *testing.T) {
 	env := newTestEnv(t)
 	env.srv.AddProject("abc12", "Test Project")
-	env.writeFile("data/pull_only.csv", "data")
-	env.writeFile(".gosf/gosf.toml", `[project]
+	env.srv.AddFolder("abc12", "/data")
+	f := env.srv.AddFile("abc12", "/data/input.csv", []byte("reference data"))
+	env.writeFile("data/input.csv", "reference data")
+	env.writeFile(".gosf/gosf.toml", fmt.Sprintf(`[project]
 id = "abc12"
 
 [[files]]
-local = "data/pull_only.csv"
-remote = "/data/pull_only.csv"
-direction = "pull"
-version = 0
-md5 = ""
-`)
+local = "data/input.csv"
+remote = "/data/input.csv"
+version = 1
+md5 = "%s"
+`, f.VersionMD5(1)))
 
-	_, _, code := env.run("push", "--quiet")
+	_, stderr, code := env.run("push", "--quiet")
 	if code != 0 {
-		t.Fatalf("bare push should succeed even with pull-only entries")
+		t.Fatalf("bare push exit %d; stderr=%s", code, stderr)
 	}
 	if uploads := env.srv.Uploads(); len(uploads) != 0 {
-		t.Errorf("bare push should not upload pull-only entries; got %d uploads", len(uploads))
+		t.Errorf("an unchanged file must not be re-uploaded; got %d uploads", len(uploads))
+	}
+}
+
+// The counterpart: a locally modified file is published by bare push whatever
+// the entry once declared. Before #81 a direction=pull entry refused this.
+func TestPush_BarePublishesLocallyModifiedEntry(t *testing.T) {
+	env := newTestEnv(t)
+	env.srv.AddProject("abc12", "Test Project")
+	env.srv.AddFolder("abc12", "/data")
+	f := env.srv.AddFile("abc12", "/data/notes.csv", []byte("original"))
+	env.writeFile("data/notes.csv", "edited locally")
+	env.writeFile(".gosf/gosf.toml", fmt.Sprintf(`[project]
+id = "abc12"
+
+[[files]]
+local     = "data/notes.csv"
+remote    = "/data/notes.csv"
+direction = "pull"
+version   = 1
+md5       = "%s"
+`, f.VersionMD5(1)))
+
+	_, stderr, code := env.run("push", "--yes", "--quiet")
+	if code != 0 {
+		t.Fatalf("bare push exit %d; stderr=%s", code, stderr)
+	}
+	uploads := env.srv.Uploads()
+	if len(uploads) == 0 {
+		t.Fatal("expected the modified file to be published")
+	}
+	if string(uploads[0].Content) != "edited locally" {
+		t.Errorf("upload content = %q", uploads[0].Content)
 	}
 }
 
 // ---- Sync ----
 
-func TestSync_PushAheadOfManifest(t *testing.T) {
+// AHEAD_OF_MANIFEST is genuinely ambiguous — the same difference means
+// "publish this" for a generated output and "throw this away" for an edited
+// input — so sync reports it, transfers nothing, and exits non-zero. `gosf push`
+// and `gosf pull --force` are the two ways to say which one you meant (#81).
+func TestSync_AheadIsReportedNotPushed(t *testing.T) {
 	env := newTestEnv(t)
 	env.srv.AddProject("abc12", "Test Project")
 	f := env.srv.AddFile("abc12", "/data.csv", []byte("original"))
@@ -625,27 +667,67 @@ id = "abc12"
 [[files]]
 local     = "data.csv"
 remote    = "/data.csv"
-direction = "push"
 version   = 1
 md5       = "%s"
 `, f.VersionMD5(1)))
 
-	_, stderr, code := env.run("sync", "--quiet", "--no-check-remote")
-	if code != 0 {
-		t.Fatalf("sync exit %d; stderr=%s", code, stderr)
+	_, stderr, code := env.run("sync", "--no-check-remote")
+	if code == 0 {
+		t.Fatal("sync should exit non-zero when an entry is only reported")
+	}
+	if len(env.srv.Uploads()) != 0 {
+		t.Error("sync must not publish a locally modified file on its own")
+	}
+	if !strings.Contains(stderr, "locally modified") {
+		t.Errorf("sync should say what it found; stderr=%s", stderr)
+	}
+	if toml := env.readFile(".gosf/gosf.toml"); !strings.Contains(toml, "version   = 1") {
+		t.Errorf("the pin must be left alone:\n%s", toml)
 	}
 
+	// `gosf push` is the verb that means "publish it".
+	if _, pstderr, pcode := env.run("push", "--yes", "--quiet"); pcode != 0 {
+		t.Fatalf("push exit %d; stderr=%s", pcode, pstderr)
+	}
 	uploads := env.srv.Uploads()
 	if len(uploads) == 0 {
-		t.Fatal("expected an upload, got none")
+		t.Fatal("expected push to upload the modified file")
 	}
 	if string(uploads[0].Content) != "modified content" {
 		t.Errorf("upload content = %q", uploads[0].Content)
 	}
+	if toml := env.readFile(".gosf/gosf.toml"); !strings.Contains(toml, "version = 2") {
+		t.Errorf("expected version = 2 after push:\n%s", toml)
+	}
+}
 
-	toml := env.readFile(".gosf/gosf.toml")
-	if !strings.Contains(toml, "version = 2") {
-		t.Errorf("expected version = 2 in gosf.toml:\n%s", toml)
+// The other half: `gosf sync --force` discards the local edit and restores the
+// tracked version instead.
+func TestSync_ForceDiscardsLocalModification(t *testing.T) {
+	env := newTestEnv(t)
+	env.srv.AddProject("abc12", "Test Project")
+	f := env.srv.AddFile("abc12", "/data.csv", []byte("original"))
+
+	env.writeFile("data.csv", "modified content")
+	env.writeFile(".gosf/gosf.toml", fmt.Sprintf(`[project]
+id = "abc12"
+
+[[files]]
+local     = "data.csv"
+remote    = "/data.csv"
+version   = 1
+md5       = "%s"
+`, f.VersionMD5(1)))
+
+	_, stderr, code := env.run("sync", "--force", "--quiet")
+	if code != 0 {
+		t.Fatalf("sync --force exit %d; stderr=%s", code, stderr)
+	}
+	if got := env.readFile("data.csv"); got != "original" {
+		t.Errorf("--force should restore the remote version, got %q", got)
+	}
+	if len(env.srv.Uploads()) != 0 {
+		t.Error("--force restores; it must not upload")
 	}
 }
 
@@ -660,7 +742,6 @@ id = "abc12"
 [[files]]
 local     = "data.csv"
 remote    = "/data.csv"
-direction = "pull"
 version   = 1
 md5       = "%s"
 `, f.VersionMD5(1)))
@@ -682,23 +763,21 @@ func TestSync_PullsAndPushes(t *testing.T) {
 	env.srv.AddProject("abc12", "Test Project")
 	f := env.srv.AddFile("abc12", "/pull-me.csv", []byte("remote content"))
 
-	// push-eligible: AHEAD_OF_MANIFEST (local differs from pinned MD5)
+	// NOT_PUSHED with local content → sync uploads it.
 	env.writeFile("push-me.csv", "modified locally")
-	// pull-eligible: MISSING (file doesn't exist locally)
+	// MISSING (file doesn't exist locally) → sync downloads it.
 	env.writeFile(".gosf/gosf.toml", fmt.Sprintf(`[project]
 id = "abc12"
 
 [[files]]
 local     = "push-me.csv"
 remote    = "/push-me.csv"
-direction = "push"
-version   = 1
-md5       = "deadbeefdeadbeef"
+version   = 0
+md5       = ""
 
 [[files]]
 local     = "pull-me.csv"
 remote    = "/pull-me.csv"
-direction = "pull"
 version   = 1
 md5       = "%s"
 `, f.VersionMD5(1)))
@@ -744,17 +823,17 @@ func TestSync_DryRun(t *testing.T) {
 	env.srv.AddProject("abc12", "Test Project")
 	f := env.srv.AddFile("abc12", "/data.csv", []byte("original"))
 
+	_ = f
 	env.writeFile("data.csv", "changed")
-	env.writeFile(".gosf/gosf.toml", fmt.Sprintf(`[project]
+	env.writeFile(".gosf/gosf.toml", `[project]
 id = "abc12"
 
 [[files]]
 local     = "data.csv"
 remote    = "/data.csv"
-direction = "push"
-version   = 1
-md5       = "%s"
-`, f.VersionMD5(1)))
+version   = 0
+md5       = ""
+`)
 
 	stdout, stderr, code := env.run("sync", "--dry-run", "--no-check-remote")
 	if code != 0 {
@@ -783,7 +862,6 @@ id = "abc12"
 [[files]]
 local     = "report.csv"
 remote    = "/report.csv"
-direction = "push"
 version   = 1
 md5       = "%s"
 `, f.VersionMD5(1)))
@@ -820,14 +898,12 @@ id = "abc12"
 [[files]]
 local     = "synced.csv"
 remote    = "/synced.csv"
-direction = "pull"
 version   = 1
 md5       = "%s"
 
 [[files]]
 local     = "missing.csv"
 remote    = "/missing.csv"
-direction = "pull"
 version   = 1
 md5       = "abc123def456"
 `, f.VersionMD5(1)))
@@ -867,7 +943,6 @@ id = "abc12"
 [[files]]
 local     = "ok.csv"
 remote    = "/ok.csv"
-direction = "pull"
 version   = 1
 md5       = "%s"
 `, f.VersionMD5(1)))
@@ -897,8 +972,8 @@ func TestAdd_FetchesRemoteVersion(t *testing.T) {
 	if !strings.Contains(toml, f.VersionMD5(1)) {
 		t.Errorf("expected md5 %q in gosf.toml:\n%s", f.VersionMD5(1), toml)
 	}
-	if !strings.Contains(toml, "push") {
-		t.Errorf("expected direction push in gosf.toml:\n%s", toml)
+	if strings.Contains(toml, "direction") {
+		t.Errorf("direction is no longer written to the manifest:\n%s", toml)
 	}
 }
 
@@ -1006,8 +1081,8 @@ func TestAdd_NoDestMirrorsPath(t *testing.T) {
 	if !strings.Contains(toml, "/data/file.txt") {
 		t.Errorf("expected /data/file.txt in gosf.toml:\n%s", toml)
 	}
-	if !strings.Contains(toml, "push") {
-		t.Errorf("expected direction push in gosf.toml:\n%s", toml)
+	if strings.Contains(toml, "direction") {
+		t.Errorf("direction is no longer written to the manifest:\n%s", toml)
 	}
 }
 
@@ -1084,7 +1159,6 @@ id = "abc12"
 [[files]]
 local = "data/file.txt"
 remote = "/data/file.txt"
-direction = "push"
 version = 0
 md5 = ""
 `)
@@ -1786,7 +1860,7 @@ func TestPull_IdempotentWhenLocalIdentical(t *testing.T) {
 		t.Error("a.csv content changed unexpectedly")
 	}
 	mani := env.readFile(".gosf/gosf.toml")
-	for _, want := range []string{"ml/clade/a.csv", "ml/clade/b.csv", "pull"} {
+	for _, want := range []string{"ml/clade/a.csv", "ml/clade/b.csv"} {
 		if !strings.Contains(mani, want) {
 			t.Errorf("manifest missing %q:\n%s", want, mani)
 		}
@@ -1813,7 +1887,6 @@ id = "abc12"
 [[files]]
 local     = "inputs/x.csv"
 remote    = "/inputs/x.csv"
-direction = "pull"
 version   = 0
 md5       = ""
 `)
@@ -1844,7 +1917,6 @@ id = "abc12"
 [[files]]
 local     = "inputs/x.csv"
 remote    = "/inputs/x.csv"
-direction = "both"
 version   = 0
 md5       = ""
 `)
@@ -1876,7 +1948,6 @@ id = "abc12"
 [[files]]
 local     = "data.csv"
 remote    = "/data.csv"
-direction = "pull"
 version   = 1
 md5       = "%s"
 `, f.VersionMD5(1)))
@@ -1908,7 +1979,6 @@ id = "abc12"
 [[files]]
 local     = "species.csv"
 remote    = "/species.csv"
-direction = "both"
 version   = 1
 md5       = "%s"
 `, f.VersionMD5(1)))
@@ -1940,7 +2010,6 @@ id = "abc12"
 [[files]]
 local     = "new.csv"
 remote    = "/new.csv"
-direction = "push"
 version   = 0
 md5       = ""
 `)
@@ -2220,7 +2289,7 @@ func TestRm_NotFound(t *testing.T) {
 func TestStatus_MalformedManifest(t *testing.T) {
 	env := newTestEnv(t)
 	env.srv.AddProject("abc12", "Test")
-	// Entry missing the required `direction` field → load must fail.
+	// Two entries claiming the same local path → load must fail.
 	env.writeFile(".gosf/gosf.toml", `[project]
 id = "abc12"
 
@@ -2228,10 +2297,43 @@ id = "abc12"
 local  = "x.csv"
 remote = "/x.csv"
 version = 0
+
+[[files]]
+local  = "x.csv"
+remote = "/other.csv"
+version = 0
 `)
 	_, stderr, code := env.run("status")
-	if code == 0 || !strings.Contains(stderr, "direction") {
-		t.Errorf("expected a manifest validation error mentioning direction; code=%d stderr=%q", code, stderr)
+	if code == 0 || !strings.Contains(stderr, "duplicate") {
+		t.Errorf("expected a duplicate-local-path validation error; code=%d stderr=%q", code, stderr)
+	}
+}
+
+// A manifest written by gosf <= 1.9 still carries `direction` on every entry.
+// It must keep working: the key is ignored with a warning, never an error, and
+// it is dropped the next time gosf writes the file (#81).
+func TestStatus_LegacyDirectionManifestStillWorks(t *testing.T) {
+	env := newTestEnv(t)
+	env.srv.AddProject("abc12", "Test")
+	f := env.srv.AddFile("abc12", "/x.csv", []byte("data"))
+	env.writeFile("x.csv", "data")
+	env.writeFile(".gosf/gosf.toml", fmt.Sprintf(`[project]
+id = "abc12"
+
+[[files]]
+local     = "x.csv"
+remote    = "/x.csv"
+direction = "pull"
+version   = 1
+md5       = "%s"
+`, f.VersionMD5(1)))
+
+	_, stderr, code := env.run("status")
+	if code != 0 {
+		t.Fatalf("a legacy manifest must still load and report in sync; exit %d stderr=%s", code, stderr)
+	}
+	if !strings.Contains(stderr, "direction") {
+		t.Errorf("loading a legacy manifest should warn about the retired key; stderr=%q", stderr)
 	}
 }
 
@@ -2266,24 +2368,22 @@ func TestOnboard_JSONRefused(t *testing.T) {
 
 // ---- Logging / verbosity (PR1: sync as the reference command) ----
 
-// syncAheadEnv sets up a push-eligible entry that is AHEAD_OF_MANIFEST so a
-// default sync contacts the remote (scan phase) and then uploads.
-func syncAheadEnv(t *testing.T) *testEnv {
+// syncPushEnv sets up an unpinned entry whose local content exists so a default
+// sync contacts the remote (scan phase) and then uploads.
+func syncPushEnv(t *testing.T) *testEnv {
 	t.Helper()
 	env := newTestEnv(t)
 	env.srv.AddProject("abc12", "Test Project")
-	f := env.srv.AddFile("abc12", "/data.csv", []byte("original"))
-	env.writeFile("data.csv", "modified content")
-	env.writeFile(".gosf/gosf.toml", fmt.Sprintf(`[project]
+	env.writeFile("data.csv", "new content")
+	env.writeFile(".gosf/gosf.toml", `[project]
 id = "abc12"
 
 [[files]]
 local     = "data.csv"
 remote    = "/data.csv"
-direction = "push"
-version   = 1
-md5       = "%s"
-`, f.VersionMD5(1)))
+version   = 0
+md5       = ""
+`)
 	return env
 }
 
@@ -2291,7 +2391,7 @@ md5       = "%s"
 // is reserved for machine/result output), and the remote-scan phase reports
 // progress so a large manifest never looks stalled.
 func TestSync_ActivityGoesToStderrNotStdout(t *testing.T) {
-	env := syncAheadEnv(t)
+	env := syncPushEnv(t)
 	stdout, stderr, code := env.run("sync")
 	if code != 0 {
 		t.Fatalf("sync exit %d; stderr=%s", code, stderr)
@@ -2309,7 +2409,7 @@ func TestSync_ActivityGoesToStderrNotStdout(t *testing.T) {
 
 // --quiet drops activity logging to errors-only: no scan/transfer chatter.
 func TestSync_QuietSuppressesActivity(t *testing.T) {
-	env := syncAheadEnv(t)
+	env := syncPushEnv(t)
 	stdout, stderr, code := env.run("sync", "--quiet")
 	if code != 0 {
 		t.Fatalf("sync exit %d; stderr=%s", code, stderr)
@@ -2330,12 +2430,12 @@ func TestSync_QuietSuppressesActivity(t *testing.T) {
 
 // -v surfaces per-item DEBUG detail (e.g. the upload URL / resolve steps).
 func TestSync_VerboseAddsDebugDetail(t *testing.T) {
-	env := syncAheadEnv(t)
+	env := syncPushEnv(t)
 	_, stderrPlain, _ := env.run("sync", "--dry-run")
 	if strings.Contains(stderrPlain, "DEBUG") {
 		t.Errorf("default sync should not emit DEBUG lines, got:\n%s", stderrPlain)
 	}
-	env2 := syncAheadEnv(t)
+	env2 := syncPushEnv(t)
 	_, stderrV, code := env2.run("sync", "-v", "--dry-run")
 	if code != 0 {
 		t.Fatalf("sync -v exit %d; stderr=%s", code, stderrV)
@@ -2453,14 +2553,12 @@ id = "abc12"
 [[files]]
 local = "a.csv"
 remote = "/a.csv"
-direction = "pull"
 version = 1
 md5 = "%s"
 
 [[files]]
 local = "b.csv"
 remote = "/b.csv"
-direction = "pull"
 version = 1
 md5 = "%s"
 `, f1.VersionMD5(1), f2.VersionMD5(1)))
@@ -2491,7 +2589,6 @@ id = "abc12"
 [[files]]
 local = "a.csv"
 remote = "/a.csv"
-direction = "pull"
 version = 2
 md5 = "%s"
 `, f.VersionMD5(2)))
@@ -2525,14 +2622,13 @@ id = "abc12"
 [[files]]
 local     = "ml/plan.md"
 remote    = "/ml/plan.md"
-direction = "push"
 version   = 0
 md5       = ""
 `)
 
-	stdout, stderr, code := env.run("sync")
+	stdout, stderr, code := env.run("push", "--yes", "--quiet")
 	if code != 0 {
-		t.Fatalf("sync should reconcile an existing remote, not 409; exit %d\nstdout=%s\nstderr=%s", code, stdout, stderr)
+		t.Fatalf("push should mint a new version on an existing remote, not 409; exit %d\nstdout=%s\nstderr=%s", code, stdout, stderr)
 	}
 	// A new version must have been created (upload happened).
 	if len(env.srv.Uploads()) == 0 {
@@ -2560,7 +2656,6 @@ id = "abc12"
 [[files]]
 local     = "ml/plan.md"
 remote    = "/ml/plan.md"
-direction = "push"
 version   = 0
 md5       = ""
 `)
@@ -2575,5 +2670,310 @@ md5       = ""
 	toml := env.readFile(".gosf/gosf.toml")
 	if !strings.Contains(toml, "version = 1") || !strings.Contains(toml, f.VersionMD5(1)) {
 		t.Errorf("expected pin to remote v1 (%s); got:\n%s", f.VersionMD5(1), toml)
+	}
+}
+
+// ---- Issue #81: direction removed; sync reconciles by state ----
+
+// The bug: `sync` refused to create files that exist on the remote but not
+// locally, and no flag changed it. Every entry here is MISSING with content on
+// the remote — including entries still carrying each of the three legacy
+// `direction` values — and a plain `gosf sync` must restore all of them.
+func TestSync_RestoresMissingFilesWithNoFlags(t *testing.T) {
+	env := newTestEnv(t)
+	env.srv.AddProject("abc12", "Test Project")
+	env.srv.AddFolder("abc12", "/results")
+
+	type fixture struct{ local, remote, content, legacy string }
+	fixtures := []fixture{
+		{"results/report.pdf", "/results/report.pdf", "pdf bytes", "push"},
+		{"results/concordance.tsv", "/results/concordance.tsv", "a\tb\n", "pull"},
+		{"results/summary.txt", "/results/summary.txt", "summary", "both"},
+	}
+
+	toml := "[project]\nid = \"abc12\"\n"
+	for _, f := range fixtures {
+		file := env.srv.AddFile("abc12", f.remote, []byte(f.content))
+		toml += fmt.Sprintf(`
+[[files]]
+local     = %q
+remote    = %q
+direction = %q
+version   = 1
+md5       = %q
+`, f.local, f.remote, f.legacy, file.VersionMD5(1))
+	}
+	env.writeFile(".gosf/gosf.toml", toml)
+
+	_, stderr, code := env.run("sync")
+	if code != 0 {
+		t.Fatalf("sync exit %d (no --force should be needed); stderr=%s", code, stderr)
+	}
+	for _, f := range fixtures {
+		if !env.fileExists(f.local) {
+			t.Errorf("%s (legacy direction=%s) was not restored", f.local, f.legacy)
+			continue
+		}
+		if got := env.readFile(f.local); got != f.content {
+			t.Errorf("%s content = %q, want %q", f.local, got, f.content)
+		}
+	}
+	if _, _, code := env.run("status"); code != 0 {
+		t.Errorf("status should report everything in sync after the restore, got %d", code)
+	}
+}
+
+// An unpinned (version = 0) entry whose remote holds the only copy lands in
+// MISSING too, and must be restored just the same.
+func TestSync_RestoresMissingUnpinnedEntry(t *testing.T) {
+	env := newTestEnv(t)
+	env.srv.AddProject("abc12", "Test Project")
+	env.srv.AddFile("abc12", "/data.csv", []byte("remote only"))
+	env.writeFile(".gosf/gosf.toml", `[project]
+id = "abc12"
+
+[[files]]
+local   = "data.csv"
+remote  = "/data.csv"
+version = 0
+md5     = ""
+`)
+
+	_, stderr, code := env.run("sync")
+	if code != 0 {
+		t.Fatalf("sync exit %d; stderr=%s", code, stderr)
+	}
+	if got := env.readFile("data.csv"); got != "remote only" {
+		t.Errorf("data.csv = %q", got)
+	}
+	if mani := env.readFile(".gosf/gosf.toml"); !strings.Contains(mani, "version = 1") {
+		t.Errorf("the restored entry should be pinned:\n%s", mani)
+	}
+}
+
+// divergedEnv builds a manifest whose single entry has diverged (local and
+// remote both moved off the pinned baseline), still carrying a legacy
+// `direction` value so the test proves it no longer steers --resolve.
+func divergedEnv(t *testing.T, legacyDirection string) *testEnv {
+	t.Helper()
+	env := newTestEnv(t)
+	env.srv.AddProject("abc12", "Test Project")
+	f := env.srv.AddFile("abc12", "/data.csv", []byte("baseline"))
+	baseline := f.VersionMD5(1)
+	env.srv.AddVersion("abc12", "/data.csv", []byte("remote edit"))
+	env.writeFile("data.csv", "local edit")
+	env.writeFile(".gosf/gosf.toml", fmt.Sprintf(`[project]
+id = "abc12"
+
+[[files]]
+local     = "data.csv"
+remote    = "/data.csv"
+direction = %q
+version   = 1
+md5       = "%s"
+`, legacyDirection, baseline))
+	return env
+}
+
+// --resolve is an at-the-moment choice, strictly more current than anything
+// recorded on the entry, so sync must honor it as given — both ways, for every
+// legacy direction. Previously `--resolve=theirs` was rejected on a
+// direction=push entry and vice versa.
+func TestSync_ResolveIsHonoredRegardlessOfLegacyDirection(t *testing.T) {
+	for _, legacy := range []string{"push", "pull", "both"} {
+		t.Run("theirs/"+legacy, func(t *testing.T) {
+			env := divergedEnv(t, legacy)
+			if _, _, code := env.run("sync"); code == 0 {
+				t.Fatal("an unresolved divergence must fail")
+			}
+			_, stderr, code := env.run("sync", "--resolve=theirs", "--quiet")
+			if code != 0 {
+				t.Fatalf("sync --resolve=theirs exit %d; stderr=%s", code, stderr)
+			}
+			if got := env.readFile("data.csv"); got != "remote edit" {
+				t.Errorf("--resolve=theirs should take the remote, got %q", got)
+			}
+			if len(env.srv.Uploads()) != 0 {
+				t.Error("--resolve=theirs must not upload")
+			}
+		})
+
+		t.Run("ours/"+legacy, func(t *testing.T) {
+			env := divergedEnv(t, legacy)
+			_, stderr, code := env.run("sync", "--resolve=ours", "--quiet")
+			if code != 0 {
+				t.Fatalf("sync --resolve=ours exit %d; stderr=%s", code, stderr)
+			}
+			uploads := env.srv.Uploads()
+			if len(uploads) == 0 {
+				t.Fatal("--resolve=ours should publish the local copy")
+			}
+			if string(uploads[0].Content) != "local edit" {
+				t.Errorf("upload content = %q", uploads[0].Content)
+			}
+			if got := env.readFile("data.csv"); got != "local edit" {
+				t.Errorf("--resolve=ours must not touch the local file, got %q", got)
+			}
+		})
+	}
+}
+
+// A formerly-`both` entry whose remote moved ahead used to hit the push
+// handler's rollback refusal, because push always won for `both`. It is a plain
+// fast-forward.
+func TestSync_LegacyBothEntryFastForwards(t *testing.T) {
+	env := newTestEnv(t)
+	env.srv.AddProject("abc12", "Test Project")
+	f := env.srv.AddFile("abc12", "/data.csv", []byte("v1 content"))
+	baseline := f.VersionMD5(1)
+	env.srv.AddVersion("abc12", "/data.csv", []byte("v2 content"))
+	env.writeFile("data.csv", "v1 content")
+	env.writeFile(".gosf/gosf.toml", fmt.Sprintf(`[project]
+id = "abc12"
+
+[[files]]
+local     = "data.csv"
+remote    = "/data.csv"
+direction = "both"
+version   = 1
+md5       = "%s"
+`, baseline))
+
+	_, stderr, code := env.run("sync", "--quiet")
+	if code != 0 {
+		t.Fatalf("sync exit %d; stderr=%s", code, stderr)
+	}
+	if got := env.readFile("data.csv"); got != "v2 content" {
+		t.Errorf("expected a fast-forward to v2, got %q", got)
+	}
+	if len(env.srv.Uploads()) != 0 {
+		t.Error("a fast-forward must not push the old content back")
+	}
+}
+
+// `gosf pull` over a subtree used to replace whole manifest entries, flipping
+// tracked outputs to direction=pull and quietly stopping them from being
+// published again. Pulling must leave later sync/push behaviour unchanged.
+func TestPull_SubtreeDoesNotChangeLaterPushBehaviour(t *testing.T) {
+	env := newTestEnv(t)
+	env.srv.AddProject("abc12", "Test Project")
+	env.srv.AddFolder("abc12", "/data")
+	f := env.srv.AddFile("abc12", "/data/out.csv", []byte("published v1"))
+	env.writeFile("data/out.csv", "published v1")
+	env.writeFile(".gosf/gosf.toml", fmt.Sprintf(`[project]
+id = "abc12"
+
+[[files]]
+local   = "data/out.csv"
+remote  = "/data/out.csv"
+version = 1
+md5     = "%s"
+`, f.VersionMD5(1)))
+
+	if _, stderr, code := env.run("pull", "abc12:/data/", "data/", "--quiet"); code != 0 {
+		t.Fatalf("pull exit %d; stderr=%s", code, stderr)
+	}
+
+	// The output is regenerated locally, then published as before.
+	env.writeFile("data/out.csv", "published v2")
+	_, stderr, code := env.run("push", "--yes", "--quiet")
+	if code != 0 {
+		t.Fatalf("push exit %d; stderr=%s", code, stderr)
+	}
+	uploads := env.srv.Uploads()
+	if len(uploads) == 0 {
+		t.Fatal("pulling the subtree must not stop the entry from being published")
+	}
+	if string(uploads[len(uploads)-1].Content) != "published v2" {
+		t.Errorf("upload content = %q", uploads[len(uploads)-1].Content)
+	}
+}
+
+// ---- pull --track-only ----
+
+// `sync` only ever visits entries in the manifest, so remote files with no entry
+// are structurally invisible. --track-only registers a remote subtree without
+// transferring anything, so a large project can be adopted and reviewed before
+// it is downloaded; a plain `gosf sync` then fetches it.
+func TestPull_TrackOnlyRegistersWithoutDownloading(t *testing.T) {
+	env := newTestEnv(t)
+	env.srv.AddProject("abc12", "Test Project")
+	env.srv.AddFolder("abc12", "/data")
+	a := env.srv.AddFile("abc12", "/data/a.csv", []byte("alpha"))
+	env.srv.AddFile("abc12", "/data/b.csv", []byte("beta"))
+	env.writeFile(".gosf/gosf.toml", "[project]\nid = \"abc12\"\n")
+
+	_, stderr, code := env.run("pull", "abc12:/data/", "data/", "--track-only")
+	if code != 0 {
+		t.Fatalf("pull --track-only exit %d; stderr=%s", code, stderr)
+	}
+	if env.fileExists("data/a.csv") || env.fileExists("data/b.csv") {
+		t.Fatal("--track-only must not transfer any bytes")
+	}
+
+	mani := env.readFile(".gosf/gosf.toml")
+	for _, want := range []string{"data/a.csv", "data/b.csv", "/data/a.csv", "/data/b.csv"} {
+		if !strings.Contains(mani, want) {
+			t.Errorf("manifest missing %q:\n%s", want, mani)
+		}
+	}
+	if !strings.Contains(mani, a.VersionMD5(1)) {
+		t.Errorf("entries should be pinned to the remote MD5:\n%s", mani)
+	}
+	if strings.Contains(mani, "version = 0") {
+		t.Errorf("entries should be pinned to a non-zero version:\n%s", mani)
+	}
+
+	// The registered entries are MISSING, so a plain sync fetches them.
+	if _, stderr, code := env.run("sync", "--quiet"); code != 0 {
+		t.Fatalf("sync after --track-only exit %d; stderr=%s", code, stderr)
+	}
+	if got := env.readFile("data/a.csv"); got != "alpha" {
+		t.Errorf("data/a.csv = %q", got)
+	}
+	if got := env.readFile("data/b.csv"); got != "beta" {
+		t.Errorf("data/b.csv = %q", got)
+	}
+	if _, _, code := env.run("status"); code != 0 {
+		t.Errorf("status should be in sync after the sync, got %d", code)
+	}
+}
+
+func TestPull_TrackOnlyRejectsNoTrack(t *testing.T) {
+	env := newTestEnv(t)
+	env.srv.AddProject("abc12", "Test Project")
+	env.srv.AddFile("abc12", "/data.csv", []byte("x"))
+	_, stderr, code := env.run("pull", "abc12:/data.csv", "--track-only", "--no-track")
+	if code == 0 {
+		t.Fatal("--track-only and --no-track are contradictory and must be rejected")
+	}
+	if !strings.Contains(stderr, "track-only") {
+		t.Errorf("error should name the flag; stderr=%q", stderr)
+	}
+}
+
+// --no-check-remote skips the classification scan, so a MISSING entry has no
+// resolved download URL from pass 1. It must still be restored: the resolution
+// happens lazily, for the entries that actually transfer.
+func TestSync_RestoresMissingFileWithoutRemoteScan(t *testing.T) {
+	env := newTestEnv(t)
+	env.srv.AddProject("abc12", "Test Project")
+	f := env.srv.AddFile("abc12", "/data.csv", []byte("remote content"))
+	env.writeFile(".gosf/gosf.toml", fmt.Sprintf(`[project]
+id = "abc12"
+
+[[files]]
+local   = "data.csv"
+remote  = "/data.csv"
+version = 1
+md5     = "%s"
+`, f.VersionMD5(1)))
+
+	_, stderr, code := env.run("sync", "--no-check-remote", "--quiet")
+	if code != 0 {
+		t.Fatalf("sync exit %d; stderr=%s", code, stderr)
+	}
+	if got := env.readFile("data.csv"); got != "remote content" {
+		t.Errorf("data.csv = %q", got)
 	}
 }

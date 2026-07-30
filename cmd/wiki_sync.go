@@ -22,8 +22,6 @@ type wikiEntryPlan struct {
 	state          manifest.FileState
 	page           *client.Wiki // resolved remote page, nil when it does not exist
 	remoteVersions []manifest.RemoteVersion
-	treatAsPush    bool
-	treatAsPull    bool
 }
 
 // wikiDivergenceError builds the hard-failure diagnostic for a diverged wiki
@@ -37,8 +35,8 @@ func wikiDivergenceError(entry manifest.WikiEntry, proj, localMD5 string, remote
 			"  remote:   v%d  md5 %s   (changed)\n"+
 			"Both sides have unreconciled changes; refusing to overwrite either automatically.\n"+
 			"Resolve explicitly:\n"+
-			"  gosf pull  --resolve=theirs   # take remote (discards local)\n"+
-			"  gosf push  --resolve=ours     # take local  (discards remote v%d)",
+			"  gosf sync --resolve=theirs   # take remote (discards local)\n"+
+			"  gosf sync --resolve=ours     # take local  (discards remote v%d)",
 		entry.Local, entry.Page,
 		entry.Version, shortMD5(entry.MD5),
 		shortMD5(localMD5),
@@ -46,109 +44,60 @@ func wikiDivergenceError(entry manifest.WikiEntry, proj, localMD5 string, remote
 		latest.Version)
 }
 
-// processWikiPushEntry handles a push-eligible wiki entry through the same gate
-// matrix as files. Returns the action taken, whether the manifest changed, and
-// any error.
-func processWikiPushEntry(
+// executeWikiEntry carries out one wiki entry's chosen action — the wiki
+// analogue of executeEntry, driven by the same syncAction decisions so a page
+// and a file in the same state reconcile the same way.
+func executeWikiEntry(
 	ctx context.Context,
 	c *client.OSFClient,
-	entry *manifest.WikiEntry,
-	proj, localAbs, localMD5 string,
-	state manifest.FileState,
-	page *client.Wiki,
-	dryRun, force bool,
-	resolve string,
-	remoteVersions []manifest.RemoteVersion,
+	p wikiEntryPlan,
+	act syncAction,
+	dryRun bool,
 ) (action string, changed bool, err error) {
-	switch state {
+	entry := p.entry
+	log.Debugf("wiki %s: state=%s action=%s", entry.Local, p.state, act)
+
+	switch act {
+	case actionPin:
+		return pinWikiEntry(entry, p.remoteVersions, dryRun)
+
+	case actionPush:
+		return pushWikiFile(ctx, c, entry, p.proj, p.localAbs, p.localMD5, p.page, dryRun)
+
+	case actionPull:
+		if p.page == nil {
+			log.Warnf("wiki %s: page %q does not exist on the remote, skipping", entry.Local, entry.Page)
+			return "skipped_unresolved", false, nil
+		}
+		return downloadWikiVersion(ctx, c, entry, p.page, p.localAbs, 0, true, p.remoteVersions, dryRun, pullActionLabel(p.state))
+
+	case actionRestore:
+		if p.page == nil {
+			return "skipped_unresolved", false, nil
+		}
+		log.Warnf("overwriting locally modified wiki: %s", entry.Local)
+		if entry.Version > 0 {
+			return downloadWikiVersion(ctx, c, entry, p.page, p.localAbs, entry.Version, false, p.remoteVersions, dryRun, "pull_force")
+		}
+		return downloadWikiVersion(ctx, c, entry, p.page, p.localAbs, 0, true, p.remoteVersions, dryRun, "pull_force")
+
+	case actionReport:
+		log.Warnf("wiki %s: locally modified (differs from pinned v%d and from the remote) — "+
+			"'gosf push' to publish it, 'gosf sync --force' to discard it", entry.Local, entry.Version)
+		return "skipped_modified", false, nil
+
+	case actionBlocked:
+		return "", false, wikiDivergenceError(*entry, p.proj, p.localMD5, p.remoteVersions)
+	}
+
+	switch p.state {
 	case manifest.StateInSync:
 		log.Debugf("wiki in sync: %s (v%d)", entry.Local, entry.Version)
 		return "in_sync", false, nil
-
 	case manifest.StateMissing:
-		log.Warnf("wiki %s: missing locally, skipping", entry.Local)
 		return "skipped_missing", false, nil
-
-	case manifest.StatePinOnly:
-		return pinWikiEntry(entry, remoteVersions, dryRun)
-
-	case manifest.StateNotPushed, manifest.StateAheadOfManifest:
-		return pushWikiFile(ctx, c, entry, proj, localAbs, localMD5, page, dryRun)
-
-	case manifest.StateRemoteNewer, manifest.StateBehind:
-		if !force {
-			latest := latestRemoteVersionInfo(remoteVersions)
-			return "", false, fmt.Errorf(
-				"push refused: %s (wiki %q) would roll the remote back over v%d (pinned v%d); "+
-					"pass --force to overwrite the remote deliberately",
-				entry.Local, entry.Page, latest.Version, entry.Version)
-		}
-		return pushWikiFile(ctx, c, entry, proj, localAbs, localMD5, page, dryRun)
-
-	case manifest.StateDivergent:
-		if resolve == "ours" {
-			return pushWikiFile(ctx, c, entry, proj, localAbs, localMD5, page, dryRun)
-		}
-		return "", false, wikiDivergenceError(*entry, proj, localMD5, remoteVersions)
-	}
-	return "noop", false, nil
-}
-
-// processWikiPullEntry handles a pull-eligible wiki entry through the gate matrix.
-func processWikiPullEntry(
-	ctx context.Context,
-	c *client.OSFClient,
-	entry *manifest.WikiEntry,
-	proj, localAbs, localMD5 string,
-	state manifest.FileState,
-	page *client.Wiki,
-	dryRun, force bool,
-	resolve string,
-	remoteVersions []manifest.RemoteVersion,
-) (action string, changed bool, err error) {
-	switch state {
-	case manifest.StateInSync:
-		return "in_sync", false, nil
-
-	case manifest.StatePinOnly:
-		return pinWikiEntry(entry, remoteVersions, dryRun)
-
-	case manifest.StateMissing, manifest.StateBehind:
-		if page == nil {
-			return "skipped_unresolved", false, nil
-		}
-		if entry.Version > 0 {
-			return downloadWikiVersion(ctx, c, entry, page, localAbs, entry.Version, false, remoteVersions, dryRun, "pull")
-		}
-		return downloadWikiVersion(ctx, c, entry, page, localAbs, 0, true, remoteVersions, dryRun, "pull")
-
-	case manifest.StateRemoteNewer:
-		if page == nil {
-			return "skipped_unresolved", false, nil
-		}
-		return downloadWikiVersion(ctx, c, entry, page, localAbs, 0, true, remoteVersions, dryRun, "fast_forward")
-
-	case manifest.StateAheadOfManifest:
-		if !force {
-			log.Warnf("wiki %s: locally modified, skipping (use --force to overwrite with the pinned version)", entry.Local)
-			return "skipped_modified", false, nil
-		}
-		if page == nil {
-			return "skipped_unresolved", false, nil
-		}
-		return downloadWikiVersion(ctx, c, entry, page, localAbs, entry.Version, false, remoteVersions, dryRun, "pull_force")
-
-	case manifest.StateDivergent:
-		if resolve != "theirs" {
-			return "", false, wikiDivergenceError(*entry, proj, localMD5, remoteVersions)
-		}
-		if page == nil {
-			return "skipped_unresolved", false, nil
-		}
-		return downloadWikiVersion(ctx, c, entry, page, localAbs, 0, true, remoteVersions, dryRun, "pull_theirs")
-
 	case manifest.StateNotPushed:
-		return "skipped_not_pushed", false, nil
+		return "skipped_not_found", false, nil
 	}
 	return "noop", false, nil
 }

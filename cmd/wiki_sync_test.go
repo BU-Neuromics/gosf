@@ -11,13 +11,22 @@ import (
 	"github.com/BU-Neuromics/gosf/internal/testutil/fakeosf"
 )
 
+// wikiPlanFor builds the classified plan executeWikiEntry consumes.
+func wikiPlanFor(we *manifest.WikiEntry, state manifest.FileState, localAbs, localMD5 string, page *client.Wiki, versions []manifest.RemoteVersion) wikiEntryPlan {
+	return wikiEntryPlan{
+		entry: we, proj: "abc12", localAbs: localAbs, localMD5: localMD5,
+		state: state, page: page, remoteVersions: versions,
+	}
+}
+
 // --- no-transfer / refusal paths: nil client is safe ---
 
-func TestProcessWikiPush_PinOnly(t *testing.T) {
-	we := &manifest.WikiEntry{Local: "docs/home.md", Page: "home", Direction: "push"}
+func TestExecuteWikiEntry_PinOnly(t *testing.T) {
+	we := &manifest.WikiEntry{Local: "docs/home.md", Page: "home"}
 	versions := []manifest.RemoteVersion{{Version: 2, MD5: "aaa"}}
-	action, changed, err := processWikiPushEntry(context.Background(), nil, we, "abc12", "/tmp/x", "aaa",
-		manifest.StatePinOnly, nil, false, false, "", versions)
+	p := wikiPlanFor(we, manifest.StatePinOnly, "/tmp/x", "aaa", nil, versions)
+
+	action, changed, err := executeWikiEntry(context.Background(), nil, p, actionPin, false)
 	if err != nil || !changed || action != "pinned" {
 		t.Fatalf("action=%q changed=%v err=%v", action, changed, err)
 	}
@@ -26,44 +35,31 @@ func TestProcessWikiPush_PinOnly(t *testing.T) {
 	}
 }
 
-func TestProcessWikiPush_RollbackRefusedWithoutForce(t *testing.T) {
-	we := &manifest.WikiEntry{Local: "docs/home.md", Page: "home", Direction: "push", Version: 1, MD5: "old"}
-	versions := []manifest.RemoteVersion{{Version: 2, MD5: "new"}, {Version: 1, MD5: "old"}}
-	_, changed, err := processWikiPushEntry(context.Background(), nil, we, "abc12", "/tmp/x", "old",
-		manifest.StateRemoteNewer, nil, false, false, "", versions)
-	if err == nil || !strings.Contains(err.Error(), "--force") {
-		t.Fatalf("expected rollback refusal, got %v", err)
-	}
-	if changed {
-		t.Error("manifest must not change on refused rollback")
+// A wiki page whose remote moved ahead fast-forwards; it is never pushed back
+// over the newer version by a plain sync.
+func TestSyncDecision_WikiRemoteNewerFastForwards(t *testing.T) {
+	if got := syncDecision(manifest.StateRemoteNewer, true, false, ""); got != actionPull {
+		t.Errorf("REMOTE_NEWER = %v, want actionPull (fast-forward, not rollback refusal)", got)
 	}
 }
 
-func TestProcessWikiPush_DivergedFailsHard(t *testing.T) {
-	we := &manifest.WikiEntry{Local: "docs/home.md", Page: "home", Direction: "push", Version: 1, MD5: "B"}
+func TestExecuteWikiEntry_DivergedFailsHard(t *testing.T) {
+	we := &manifest.WikiEntry{Local: "docs/home.md", Page: "home", Version: 1, MD5: "B"}
 	versions := []manifest.RemoteVersion{{Version: 2, MD5: "R"}, {Version: 1, MD5: "B"}}
-	_, _, err := processWikiPushEntry(context.Background(), nil, we, "abc12", "/tmp/x", "L",
-		manifest.StateDivergent, nil, false, false, "", versions)
+	p := wikiPlanFor(we, manifest.StateDivergent, "/tmp/x", "L", nil, versions)
+
+	_, _, err := executeWikiEntry(context.Background(), nil, p, actionBlocked, false)
 	if err == nil || !strings.Contains(err.Error(), "divergence") {
 		t.Fatalf("expected divergence error, got %v", err)
 	}
 }
 
-func TestProcessWikiPull_DivergedFailsHard(t *testing.T) {
-	we := &manifest.WikiEntry{Local: "docs/home.md", Page: "home", Direction: "pull", Version: 1, MD5: "B"}
-	versions := []manifest.RemoteVersion{{Version: 2, MD5: "R"}, {Version: 1, MD5: "B"}}
-	_, _, err := processWikiPullEntry(context.Background(), nil, we, "abc12", "/tmp/x", "L",
-		manifest.StateDivergent, nil, false, false, "", versions)
-	if err == nil || !strings.Contains(err.Error(), "divergence") {
-		t.Fatalf("expected divergence error, got %v", err)
-	}
-}
-
-func TestProcessWikiPull_AheadSkippedWithoutForce(t *testing.T) {
-	we := &manifest.WikiEntry{Local: "docs/home.md", Page: "home", Direction: "pull", Version: 1, MD5: "B"}
+func TestExecuteWikiEntry_AheadIsReported(t *testing.T) {
+	we := &manifest.WikiEntry{Local: "docs/home.md", Page: "home", Version: 1, MD5: "B"}
 	versions := []manifest.RemoteVersion{{Version: 1, MD5: "B"}}
-	action, changed, err := processWikiPullEntry(context.Background(), nil, we, "abc12", "/tmp/x", "L",
-		manifest.StateAheadOfManifest, nil, false, false, "", versions)
+	p := wikiPlanFor(we, manifest.StateAheadOfManifest, "/tmp/x", "L", nil, versions)
+
+	action, changed, err := executeWikiEntry(context.Background(), nil, p, actionReport, false)
 	if err != nil || changed || !strings.HasPrefix(action, "skipped") {
 		t.Fatalf("action=%q changed=%v err=%v", action, changed, err)
 	}
@@ -80,7 +76,7 @@ func wikiSyncEnv(t *testing.T) (*fakeosf.Server, *client.OSFClient, string) {
 	return srv, client.New("tok"), dir
 }
 
-func TestProcessWikiPush_CreatesPage(t *testing.T) {
+func TestExecuteWikiEntry_CreatesPage(t *testing.T) {
 	srv, c, dir := wikiSyncEnv(t)
 	srv.AddProject("abc12", "P")
 
@@ -88,13 +84,14 @@ func TestProcessWikiPush_CreatesPage(t *testing.T) {
 	if err := writeFileHelper(local, "new content\n"); err != nil {
 		t.Fatal(err)
 	}
-	we := &manifest.WikiEntry{Local: "home.md", Page: "home", Direction: "push"}
-	action, changed, err := processWikiPushEntry(context.Background(), c, we, "abc12", local, md5of("new content\n"),
-		manifest.StateNotPushed, nil, false, false, "", nil)
+	we := &manifest.WikiEntry{Local: "home.md", Page: "home"}
+	p := wikiPlanFor(we, manifest.StateNotPushed, local, md5of("new content\n"), nil, nil)
+
+	action, changed, err := executeWikiEntry(context.Background(), c, p, actionPush, false)
 	if err != nil || !changed {
 		t.Fatalf("action=%q changed=%v err=%v", action, changed, err)
 	}
-	if p := srv.GetWiki("abc12", "home"); p == nil || string(p.LatestContent()) != "new content" {
+	if page := srv.GetWiki("abc12", "home"); page == nil || string(page.LatestContent()) != "new content" {
 		t.Errorf("page not created with expected (canonical) content")
 	}
 	if we.Version != 1 || we.MD5 != md5of("new content\n") {
@@ -102,17 +99,21 @@ func TestProcessWikiPush_CreatesPage(t *testing.T) {
 	}
 }
 
-func TestProcessWikiPush_NewVersion(t *testing.T) {
+func TestExecuteWikiEntry_NewVersion(t *testing.T) {
 	srv, c, dir := wikiSyncEnv(t)
 	srv.AddProject("abc12", "P")
 	page := srv.AddWiki("abc12", "home", []byte("v1\n"))
 
 	local := filepath.Join(dir, "home.md")
-	writeFileHelper(local, "v2\n")
+	if err := writeFileHelper(local, "v2\n"); err != nil {
+		t.Fatal(err)
+	}
 	wiki := &client.Wiki{ID: page.ID, Attributes: client.WikiAttributes{Name: "home", Extra: client.WikiExtra{Version: 1}}}
-	we := &manifest.WikiEntry{Local: "home.md", Page: "home", Direction: "push", Version: 1, MD5: md5of("v1\n")}
-	action, changed, err := processWikiPushEntry(context.Background(), c, we, "abc12", local, md5of("v2\n"),
-		manifest.StateAheadOfManifest, wiki, false, false, "", []manifest.RemoteVersion{{Version: 1, MD5: md5of("v1\n")}})
+	we := &manifest.WikiEntry{Local: "home.md", Page: "home", Version: 1, MD5: md5of("v1\n")}
+	p := wikiPlanFor(we, manifest.StateAheadOfManifest, local, md5of("v2\n"), wiki,
+		[]manifest.RemoteVersion{{Version: 1, MD5: md5of("v1\n")}})
+
+	action, changed, err := executeWikiEntry(context.Background(), c, p, actionPush, false)
 	if err != nil || !changed {
 		t.Fatalf("action=%q changed=%v err=%v", action, changed, err)
 	}
@@ -124,19 +125,22 @@ func TestProcessWikiPush_NewVersion(t *testing.T) {
 	}
 }
 
-func TestProcessWikiPull_FastForward(t *testing.T) {
+func TestExecuteWikiEntry_FastForward(t *testing.T) {
 	srv, c, dir := wikiSyncEnv(t)
 	srv.AddProject("abc12", "P")
 	page := srv.AddWiki("abc12", "home", []byte("v1\n"))
 	srv.AddWikiVersion("abc12", "home", []byte("v2 remote\n"))
 
 	local := filepath.Join(dir, "home.md")
-	writeFileHelper(local, "v1\n")
+	if err := writeFileHelper(local, "v1\n"); err != nil {
+		t.Fatal(err)
+	}
 	wiki := &client.Wiki{ID: page.ID, Attributes: client.WikiAttributes{Name: "home", Extra: client.WikiExtra{Version: 2}}}
-	we := &manifest.WikiEntry{Local: "home.md", Page: "home", Direction: "pull", Version: 1, MD5: md5of("v1\n")}
-	action, changed, err := processWikiPullEntry(context.Background(), c, we, "abc12", local, md5of("v1"),
-		manifest.StateRemoteNewer, wiki, false, false, "",
+	we := &manifest.WikiEntry{Local: "home.md", Page: "home", Version: 1, MD5: md5of("v1\n")}
+	p := wikiPlanFor(we, manifest.StateRemoteNewer, local, md5of("v1"), wiki,
 		[]manifest.RemoteVersion{{Version: 2, MD5: md5of("v2 remote")}})
+
+	action, changed, err := executeWikiEntry(context.Background(), c, p, actionPull, false)
 	if err != nil || !changed {
 		t.Fatalf("action=%q changed=%v err=%v", action, changed, err)
 	}
@@ -149,33 +153,46 @@ func TestProcessWikiPull_FastForward(t *testing.T) {
 	}
 }
 
-func TestProcessWikiPull_Missing_WritesFile(t *testing.T) {
+// The bug in #81, for wikis: a page that exists on the remote but not locally
+// is written by a plain sync, with no flag at all.
+func TestExecuteWikiEntry_Missing_WritesFile(t *testing.T) {
 	srv, c, dir := wikiSyncEnv(t)
 	srv.AddProject("abc12", "P")
 	page := srv.AddWiki("abc12", "home", []byte("only version\n"))
 
 	local := filepath.Join(dir, "sub", "home.md") // does not exist yet
 	wiki := &client.Wiki{ID: page.ID, Attributes: client.WikiAttributes{Name: "home", Extra: client.WikiExtra{Version: 1}}}
-	we := &manifest.WikiEntry{Local: "sub/home.md", Page: "home", Direction: "pull"}
-	action, changed, err := processWikiPullEntry(context.Background(), c, we, "abc12", local, "",
-		manifest.StateMissing, wiki, false, false, "",
+	we := &manifest.WikiEntry{Local: "sub/home.md", Page: "home"}
+	p := wikiPlanFor(we, manifest.StateMissing, local, "", wiki,
 		[]manifest.RemoteVersion{{Version: 1, MD5: md5of("only version")}})
+
+	act := syncDecision(p.state, false, false, "")
+	if act != actionPull {
+		t.Fatalf("a missing wiki page must be pulled with no flags, got %v", act)
+	}
+	action, changed, err := executeWikiEntry(context.Background(), c, p, act, false)
 	if err != nil || !changed {
 		t.Fatalf("action=%q changed=%v err=%v", action, changed, err)
 	}
 	if got := readFileHelper(t, local); got != "only version" {
 		t.Errorf("local content = %q", got)
 	}
+	if we.Version != 1 {
+		t.Errorf("entry should be pinned after restore, got v%d", we.Version)
+	}
 }
 
-func TestProcessWikiPush_DryRunNoWrite(t *testing.T) {
+func TestExecuteWikiEntry_DryRunNoWrite(t *testing.T) {
 	srv, c, dir := wikiSyncEnv(t)
 	srv.AddProject("abc12", "P")
 	local := filepath.Join(dir, "home.md")
-	writeFileHelper(local, "x\n")
-	we := &manifest.WikiEntry{Local: "home.md", Page: "home", Direction: "push"}
-	_, changed, err := processWikiPushEntry(context.Background(), c, we, "abc12", local, md5of("x\n"),
-		manifest.StateNotPushed, nil, true /*dryRun*/, false, "", nil)
+	if err := writeFileHelper(local, "x\n"); err != nil {
+		t.Fatal(err)
+	}
+	we := &manifest.WikiEntry{Local: "home.md", Page: "home"}
+	p := wikiPlanFor(we, manifest.StateNotPushed, local, md5of("x\n"), nil, nil)
+
+	_, changed, err := executeWikiEntry(context.Background(), c, p, actionPush, true /*dryRun*/)
 	if err != nil || changed {
 		t.Fatalf("dry-run: changed=%v err=%v", changed, err)
 	}

@@ -25,6 +25,7 @@ var (
 	pushForce         bool
 	pushYes           bool
 	pushResolve       string
+	pushJobs          int
 )
 
 var pushCmd = &cobra.Command{
@@ -32,8 +33,9 @@ var pushCmd = &cobra.Command{
 	Short: "Upload a file or directory to an OSF project",
 	Long: `Upload a local file or directory to an OSF project.
 
-With no arguments, pushes all tracked files with direction=push or direction=both
-from .gosf/gosf.toml. Requires .gosf/gosf.toml with [project].id set (run 'gosf init').
+With no arguments, publishes every tracked file that holds local work the remote
+does not have: files modified since they were last synced, and files never
+pushed. Requires .gosf/gosf.toml with [project].id set (run 'gosf init').
 
 With arguments, uploads the specified local file or directory and records it
 in .gosf/gosf.toml (unless --no-track is set).
@@ -44,7 +46,7 @@ Conflict behaviour (--conflict):
   rename              Append _1, _2, … to find a free name.
 
 Examples:
-  gosf push                               # push all manifest push-eligible files
+  gosf push                               # publish local changes to tracked files
   gosf push results.csv abc12:/data/results.csv
   gosf push ./results/  abc12:/data/
   gosf push data.csv    abc12:/data/data.csv --conflict=overwrite`,
@@ -170,46 +172,35 @@ func runBarePush(cmd *cobra.Command) error {
 
 	osfClient := client.New(token)
 	wb := client.NewWaterbutler(token)
-	res := resolver.New(osfClient)
+	// Per-run cache so the many files sharing directories don't each re-list them.
+	res := resolver.New(resolver.NewCachingLister(osfClient))
 
 	jsonMode := flagOutput == "json"
 	quiet := flagQuiet || jsonMode
 	jsonResults := make([]output.SyncItem, 0)
 	manifestChanged := false
 
-	// Pass 1: classify every push-eligible entry (no transfers yet).
-	plans := make([]entryPlan, 0, len(m.Files))
-	for i := range m.Files {
-		entry := &m.Files[i]
-		if entry.Direction != "push" && entry.Direction != "both" {
+	// Pass 1: classify every entry (no transfers yet), then keep the ones that
+	// hold local work to publish. Selection is by state, not by any field on the
+	// entry: what a push should do is a property of how local, the pinned
+	// baseline, and the remote compare right now (issue #81).
+	scanned, err := scanEntries(cmd.Context(), m, repoRoot, res, osfClient, pushJobs, pushNoCheckRemote)
+	if err != nil {
+		return err
+	}
+	plans := make([]entryPlan, 0, len(scanned))
+	actions := make([]syncAction, 0, len(scanned))
+	for _, p := range scanned {
+		act := pushDecision(p.state, p.localMD5 != "", pushForce, pushResolve)
+		if act == actionNone {
 			continue
 		}
-		proj := entry.ResolveProject(m.Project.ID)
-		localAbs := filepath.Join(repoRoot, entry.Local)
-
-		localMD5, err := computeLocalMD5(localAbs)
-		if err != nil {
-			return fmt.Errorf("computing MD5 for %s: %w", entry.Local, err)
-		}
-
-		var remoteVersions []manifest.RemoteVersion
-		if !pushNoCheckRemote {
-			if item, resolveErr := res.Resolve(cmd.Context(), proj, entry.Remote); resolveErr == nil {
-				if fvs, fetchErr := osfClient.GetFileVersions(cmd.Context(), item.ID); fetchErr == nil {
-					remoteVersions = fileVersionsToRemote(fvs)
-				}
-			}
-		}
-
-		state := manifest.ClassifyFile(*entry, localMD5, remoteVersions, pushNoCheckRemote)
-		plans = append(plans, entryPlan{
-			entry: entry, proj: proj, localAbs: localAbs, localMD5: localMD5,
-			state: state, remoteVersions: remoteVersions, treatAsPush: true,
-		})
+		plans = append(plans, p)
+		actions = append(actions, act)
 	}
 
-	// Pre-flight: divergence and unauthorized rollbacks fail before any prompt.
-	if err := preflightPush(plans, pushForce, pushResolve); err != nil {
+	// Pre-flight: divergence fails before any prompt or transfer.
+	if err := preflightPush(plans, actions); err != nil {
 		return err
 	}
 
@@ -233,14 +224,20 @@ func runBarePush(cmd *cobra.Command) error {
 			log.Warnf("aborted")
 			return nil
 		}
-	} else if !quiet && !jsonMode {
+	} else if !quiet && !jsonMode && len(plans) > 0 {
 		node, _ := osfClient.GetNode(cmd.Context(), m.Project.ID)
 		printPushPlan(os.Stderr, node, m.Project.ID, plans, states)
+	} else if len(plans) == 0 {
+		// Selection is by state, so an empty plan is the normal "everything is
+		// already published" outcome — say so rather than printing a plan for
+		// nothing (and skip the node fetch it would need).
+		log.Infof("nothing to push — no tracked file has local changes to publish")
 	}
 
 	// Pass 2: execute.
-	for _, p := range plans {
-		action, changed, err := processPushEntry(cmd.Context(), p.entry, p.proj, p.localAbs, p.localMD5, p.state, res, wb, osfClient, progressBarEnabled(), pushDryRun, pushForce, pushResolve, p.remoteVersions)
+	deps := transferDeps{res: res, wb: wb, osf: osfClient, showBar: progressBarEnabled(), dryRun: pushDryRun}
+	for i, p := range plans {
+		action, changed, err := executeEntry(cmd.Context(), p, actions[i], deps)
 		if err != nil {
 			return err
 		}
@@ -263,24 +260,14 @@ func runBarePush(cmd *cobra.Command) error {
 	return nil
 }
 
-// preflightPush fails hard on any entry that has diverged (without --resolve=ours)
-// or that would perform an unauthorized remote-newer rollback (without --force),
-// before any transfer or prompt.
-func preflightPush(plans []entryPlan, force bool, resolve string) error {
+// preflightPush fails hard on any entry that has diverged without a --resolve,
+// before any transfer or prompt, so a bulk push never applies a partial,
+// half-resolved state.
+func preflightPush(plans []entryPlan, actions []syncAction) error {
 	var blocked []string
-	for _, p := range plans {
-		switch p.state {
-		case manifest.StateDivergent:
-			if resolve != "ours" {
-				blocked = append(blocked, divergenceError(*p.entry, p.proj, p.localMD5, p.remoteVersions).Error())
-			}
-		case manifest.StateRemoteNewer, manifest.StateBehind:
-			if !force {
-				latest := latestRemoteVersionInfo(p.remoteVersions)
-				blocked = append(blocked, fmt.Sprintf(
-					"push refused: %s would roll the remote back over v%d (pinned v%d); pass --force to overwrite deliberately",
-					p.entry.Local, latest.Version, p.entry.Version))
-			}
+	for i, p := range plans {
+		if actions[i] == actionBlocked {
+			blocked = append(blocked, divergenceError(*p.entry, p.proj, p.localMD5, p.remoteVersions).Error())
 		}
 	}
 	if len(blocked) > 0 {
@@ -307,17 +294,6 @@ type pushSession struct {
 
 // file uploads a single local file to an OSF destination path.
 func (s *pushSession) file(srcPath, nodeID, destPath string) error {
-	// Enforce manifest direction before doing any network work.
-	if s.manifest != nil {
-		if idx := findEntryByLocal(s.manifest, srcPath); idx >= 0 {
-			entry := s.manifest.Files[idx]
-			if entry.Direction == "pull" {
-				return fmt.Errorf("push refused: %q has direction=pull in .gosf/gosf.toml; "+
-					"edit .gosf/gosf.toml to change direction to push or both first", srcPath)
-			}
-		}
-	}
-
 	parentDir, filename := deriveUploadTarget(destPath, srcPath)
 
 	existing, err := s.res.ListDir(s.ctx, nodeID, parentDir)
@@ -408,12 +384,11 @@ func (s *pushSession) file(srcPath, nodeID, destPath string) error {
 				entryProject = nodeID
 			}
 			s.manifest.Files = append(s.manifest.Files, manifest.Entry{
-				Local:     srcPath,
-				Remote:    destFull,
-				Direction: "push",
-				Version:   uploadResult.Version,
-				MD5:       uploadResult.MD5,
-				Project:   entryProject,
+				Local:   srcPath,
+				Remote:  destFull,
+				Version: uploadResult.Version,
+				MD5:     uploadResult.MD5,
+				Project: entryProject,
 			})
 			s.manifestDirty = true
 		}
@@ -573,6 +548,7 @@ func init() {
 	pushCmd.Flags().StringVar(&pushConflict, "conflict", "skip", "Conflict resolution: skip, overwrite, or rename")
 	pushCmd.Flags().BoolVar(&pushNoTrack, "no-track", false, "Upload without recording in .gosf/gosf.toml")
 	pushCmd.Flags().BoolVar(&pushNoCheckRemote, "no-check-remote", false, "Skip remote version lookups for bare push")
+	pushCmd.Flags().IntVarP(&pushJobs, "jobs", "j", defaultScanJobs, "Number of files to scan against the remote concurrently")
 	pushCmd.Flags().BoolVar(&pushForce, "force", false, "Bypass the confirmation prompt and authorize remote-newer rollbacks")
 	pushCmd.Flags().BoolVar(&pushYes, "yes", false, "Bypass the confirmation prompt for safe pushes (new files, updates)")
 	pushCmd.Flags().StringVar(&pushResolve, "resolve", "", "Resolve divergence by taking local: 'ours'")

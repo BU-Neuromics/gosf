@@ -10,7 +10,7 @@ func TestStateDisplay_NewStates(t *testing.T) {
 	versions := []manifest.RemoteVersion{{Version: 2, MD5: "aaa"}, {Version: 1, MD5: "bbb"}}
 
 	t.Run("pin_only reports content match, not never-pushed", func(t *testing.T) {
-		entry := manifest.Entry{Local: "data/x.csv", Direction: "pull", Version: 0}
+		entry := manifest.Entry{Local: "data/x.csv", Version: 0}
 		status, detail := stateDisplay(manifest.StatePinOnly, entry, versions)
 		if status == "·" {
 			t.Errorf("PIN_ONLY should not render as the never-pushed marker")
@@ -21,7 +21,7 @@ func TestStateDisplay_NewStates(t *testing.T) {
 	})
 
 	t.Run("diverged is loud and names both sides", func(t *testing.T) {
-		entry := manifest.Entry{Local: "data/x.csv", Direction: "both", Version: 1, MD5: "ccc"}
+		entry := manifest.Entry{Local: "data/x.csv", Version: 1, MD5: "ccc"}
 		status, detail := stateDisplay(manifest.StateDivergent, entry, versions)
 		if status != "DIVERGED" {
 			t.Errorf("status = %q, want DIVERGED", status)
