@@ -1,8 +1,8 @@
 ---
 name: gosf
-description: "Use when working with the Open Science Framework (OSF) for research data management. Invoke when: the project contains a .gosf/gosf.toml manifest; the user mentions OSF, osf.io, or osfclient; the task involves syncing, pushing, or pulling research data files with an OSF project; or you need to inspect, manage, or automate files stored in OSF Storage. Covers the full gosf CLI: manifest management (gosf init / add / status / sync), file transfer (gosf pull / push / rm), storage management (gosf mkdir / mv / cp), project navigation (gosf ls / info / projects / versions / open / set), and authentication (gosf auth)."
+description: "Use when working with the Open Science Framework (OSF) for research data management. Invoke when: the project contains a .gosf/gosf.toml manifest; the user mentions OSF, osf.io, or osfclient; the task involves syncing, pushing, or pulling research data files with an OSF project; the task involves an OSF project wiki or its markdown pages; or you need to inspect, manage, or automate files stored in OSF Storage. Covers the full gosf CLI: manifest management (gosf init / add / status / sync), file transfer (gosf pull / push / rm), storage management (gosf mkdir / mv / cp), project navigation (gosf ls / info / projects / versions / open / set), project wikis (gosf wiki ls / get / push / rm / mv / versions / open / add), and authentication (gosf auth)."
 metadata:
-  version: "1.1.0"
+  version: "2.0.0"
 ---
 
 # gosf — Open Science Framework CLI
@@ -76,6 +76,22 @@ md5     = "d41d8cd98f00b204..."  # MD5 of pinned version; "" if version=0
 project = "xyz89"                # optional: override [project].id for this entry
 ```
 
+Wiki pages are tracked with `[[wikis]]` entries, which mirror `[[files]]` but
+address a named wiki page instead of a storage path:
+
+```toml
+[[wikis]]
+local   = "docs/home.md"   # markdown file, relative to repo root
+page    = "home"           # wiki page name on OSF (flat namespace, may contain spaces)
+version = 3                # pinned wiki version; 0 = not yet pushed
+md5     = "…"              # MD5 of the pinned version's content, computed by gosf
+project = "xyz89"          # optional: override [project].id for this entry
+```
+
+A `local` path may appear in only one of `[[files]]` and `[[wikis]]`. Wiki
+entries flow through the same states, gates, and `--force`/`--resolve` handling
+as files.
+
 **There is no per-entry direction.** What a transfer should do is decided at the
 moment of the transfer, by comparing local content, the pinned baseline, and the
 remote (see the state table below). Manifests written by gosf ≤ 1.9 still carry a
@@ -106,9 +122,9 @@ against the remote instead of blindly reporting "never pushed".
 ```bash
 gosf onboard [--project <guid>] [--remote-base <path>]  # interactive guided setup (TTY only)
 gosf init <project-id>                              # create/update .gosf/gosf.toml
-gosf add <local-path> [<project>:]<remote-path>     # stage file(s) for push (dir = recursive)
-gosf status [--no-check-remote] [--output=json]     # show sync state of all entries
-gosf sync [--force] [--resolve=ours|theirs] [--dry-run] [--no-check-remote] [--output=json]
+gosf add <local-path> [<project>:]<remote-path>     # track file(s) (dir = recursive)
+gosf status [--no-check-remote] [--jobs=N] [--output=json]   # show sync state of all entries
+gosf sync [--force] [--resolve=ours|theirs] [--dry-run] [--no-check-remote] [--jobs=N] [--output=json]
 ```
 
 `gosf onboard` is a resumable, interactive wizard (auth → attach a project → pick
@@ -149,10 +165,11 @@ with the verb — `gosf push` publishes it, `gosf pull --force` (or
 ### File transfer
 
 ```bash
-gosf pull <project>[:<path>] [dest] [--version=N] [--force] [--resolve=theirs] [--dry-run]
+gosf pull <project>[:<path>] [dest] [--version=N] [--force] [--resolve=theirs] [--no-track] [--dry-run]
 gosf pull <project>:<path> <dest> --track-only      # register entries, transfer nothing
-gosf push <src> <project>:<path> [--conflict=skip|overwrite|rename] [--dry-run]
-gosf push [--yes|--force] [--resolve=ours]          # no args: push manifest entries
+gosf pull [--force] [--resolve=theirs] [--jobs=N]   # no args: pull tracked entries
+gosf push <src> <project>:<path> [--conflict=skip|overwrite|rename] [--no-track] [--dry-run]
+gosf push [--yes|--force] [--resolve=ours] [--no-check-remote] [--jobs=N]   # no args: push manifest entries
 gosf rm <project>:<path> [--yes] [--dry-run]
 ```
 
@@ -169,6 +186,39 @@ gosf rm <project>:<path> [--yes] [--dry-run]
   downloaded. The entries land as `MISSING`; a plain `gosf sync` then fetches
   them. `sync` only ever visits entries in the manifest, so this is how remote
   files that nothing tracks become visible to it.
+
+### Wiki pages
+
+OSF projects have a wiki: versioned markdown pages, addressed as
+`<project>:<page>`. The part after the colon is a **page name**, not a path — a
+flat namespace that may contain spaces — and defaults to `home` where optional.
+Component addressing (`abc12/xyz34:page`) works as for files.
+
+```bash
+gosf wiki ls   <project> [--output=json]                  # list pages
+gosf wiki get  <project>[:<page>] [dest] [--version=N] [--force]
+gosf wiki push <src.md> <project>[:<page>] [--dry-run]    # create page or add a version
+gosf wiki rm   <project>:<page> [--yes] [--dry-run]
+gosf wiki mv   <project>:<page> <new-name> [--dry-run]    # rename
+gosf wiki versions <project>:<page> [--output=json]
+gosf wiki open <project>[:<page>]
+gosf wiki add  <local.md> [<project>:]<page>              # track as a [[wikis]] entry
+```
+
+- `wiki get` prints to stdout by default; pass a `dest` to write a file
+  (`--force` overwrites an existing one).
+- `wiki push` creates the page if absent, otherwise mints a new version; an
+  identical re-push is skipped rather than minting a redundant version.
+- The `home` page cannot be renamed or deleted — gosf refuses client-side.
+- `wiki add` tracks a markdown file so `gosf status` / `gosf sync` reconcile the
+  page alongside files. `status`/`sync` items carry `"kind": "file"|"wiki"`.
+- **Content is canonicalized, not byte-exact.** OSF normalizes wiki content on
+  save (CRLF → LF, surrounding whitespace trimmed), so gosf compares a canonical
+  form. A local file differing from the page only in line endings or a trailing
+  newline still counts as in sync, and re-pushing it is a no-op. Do not diff raw
+  bytes against what you pushed.
+- A project can have its wiki addon disabled, which produces an actionable error
+  rather than a bare 404. Registrations are read-only.
 
 ### Storage management
 
@@ -221,6 +271,17 @@ gosf sync --resolve=theirs   # take remote (discard local), or
 gosf sync --resolve=ours     # take local  (discard remote)
 ```
 
+### Keep a wiki page in the repo
+
+```bash
+gosf wiki add docs/home.md abc12:home   # track it (pins the remote if it exists)
+gosf status                             # wiki row appears alongside files
+gosf sync                               # reconcile like any other entry
+```
+
+One-shot, without tracking: `gosf wiki push docs/home.md abc12:home`. To read a
+page, `gosf wiki get abc12:home` prints it to stdout.
+
 ### Check whether everything is in sync (CI)
 
 ```bash
@@ -238,9 +299,12 @@ gosf status                     # full: checks BEHIND / REMOTE_NEWER / DIVERGED
 | `--color auto\|always\|never` | Colorize output (default `auto`) |
 | `--verbose` / `-v` | Increase log verbosity (repeatable: `-v`/`-vv`/`-vvv`) |
 | `--progress-bar` / `-p` | Live progress bars for transfers (default: log lines) |
-| `--jobs` / `-j` | Concurrent remote checks on `sync`/`status` (default 8) |
 | `--quiet` / `-q` | Errors only (conflicts with `-v`) |
 | `--version` | Print gosf version |
+
+`--jobs` / `-j` is **not** global: it is accepted by the manifest-scanning
+commands (`sync`, `status`, and bare `push`/`pull`) and bounds how many entries
+are checked against the remote concurrently (default 8).
 
 ## Output streams and logging
 
@@ -267,8 +331,10 @@ prompt.
 
 - A `DIVERGED` file (changed both locally and remotely) blocks `sync`/`push`/`pull`
   until you pass `--resolve=ours|theirs`; plain `--force` will not override it.
-- `--force` authorizes a rollback (overwriting a newer remote version) or
-  overwriting local edits on pull — a deliberate, one-sided discard.
+- `--force` means different things by command, and both are a deliberate,
+  one-sided discard: on `sync`/`pull` it discards local modifications and
+  restores the tracked version from OSF; on `push` it authorizes a rollback
+  (burying a newer remote version) and bypasses the confirmation prompt.
 - Bare `gosf push` and `gosf rm` require `--yes`/`--force` in `--output=json` mode.
 - `gosf versions` works on files, not folders.
 - New files/folders upload into the parent folder resolved from OSF (osfstorage

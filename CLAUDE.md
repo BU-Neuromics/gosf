@@ -608,6 +608,27 @@ All other errors are printed to stderr and exit 1. `rootCmd.SilenceErrors = true
 - Vet: `go vet ./...`
 - The OSF API requires no auth for public projects; token elevates to private
 
+### Agent-skill parity (`cmd/skill_doc_test.go`)
+
+`skills/gosf/SKILL.md` is a **shipped artifact** — installed into coding agents
+via skills.sh — and its frontmatter `description` is what decides whether the
+skill loads for a task at all. It has no compiler and drifted silently: the whole
+`gosf wiki` group shipped in v1.9.0 and went undocumented for two releases,
+description included, so agents asked about an OSF wiki were never offered the
+skill.
+
+`cmd/skill_doc_test.go` walks the real cobra tree and asserts:
+
+1. every command path (`gosf wiki add`, …) appears in the skill body;
+2. every non-hidden flag, global and per-command, appears in the skill;
+3. every top-level command name appears in the frontmatter `description`.
+
+Deliberate omissions go in `undocumentedCommands` / `undocumentedFlags` / the
+`excused` map **with a reason** — the point is to force a decision, not to be
+unskippable. It runs in the normal `go test -race ./...` CI step, so adding a
+command or flag without documenting it fails the build. When you add either,
+update the skill in the same PR.
+
 ### Test tiers
 
 1. **Unit** — pure functions and HTTP clients against `httptest` (`go test ./...`).
