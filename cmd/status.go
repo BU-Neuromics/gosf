@@ -44,6 +44,10 @@ var statusCmd = &cobra.Command{
 		// Per-run cache so files sharing directories don't each re-list them.
 		res := resolver.New(resolver.NewCachingLister(osfClient))
 
+		if !statusNoCheckRemote {
+			warnUnauthenticated(token, len(m.Files)+len(m.Wikis))
+		}
+
 		jsonMode := flagOutput == "json"
 		allInSync := true
 
@@ -82,7 +86,10 @@ var statusCmd = &cobra.Command{
 				var remoteVersions []manifest.RemoteVersion
 				if !statusNoCheckRemote {
 					proj := entry.ResolveProject(m.Project.ID)
-					_, remoteVersions = fetchRemoteState(gctx, res, osfClient, proj, entry, localMD5, true)
+					_, remoteVersions, err = fetchRemoteState(gctx, res, osfClient, proj, entry, localMD5, true)
+					if err != nil {
+						return err
+					}
 				}
 
 				results[i] = scanResult{
@@ -94,7 +101,7 @@ var statusCmd = &cobra.Command{
 			})
 		}
 		if err := g.Wait(); err != nil {
-			return err
+			return friendlyAPIError(err, token != "")
 		}
 
 		for _, r := range results {

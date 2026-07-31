@@ -53,7 +53,10 @@ func scanEntries(
 			var remoteVersions []manifest.RemoteVersion
 			var resolvedItem *client.FileItem
 			if !noCheckRemote {
-				resolvedItem, remoteVersions = fetchRemoteState(gctx, res, osfClient, proj, *entry, localMD5, true)
+				resolvedItem, remoteVersions, err = fetchRemoteState(gctx, res, osfClient, proj, *entry, localMD5, true)
+				if err != nil {
+					return err
+				}
 				log.Infof("scanned remote %d/%d  %s", atomic.AddInt64(&scanned, 1), total, entry.Local)
 			} else {
 				log.Debugf("classifying %d/%d  %s (no remote check)", atomic.AddInt64(&scanned, 1), total, entry.Local)

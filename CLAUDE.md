@@ -424,6 +424,41 @@ exists, so an already-identical file classifies as `PIN_ONLY` (not `NOT_PUSHED`)
 When `--no-check-remote`: only IN_SYNC, MISSING, AHEAD_OF_MANIFEST, NOT_PUSHED are
 possible (the remote-comparing states need network).
 
+### Rate limiting and request efficiency (issue #86)
+
+OSF throttles: roughly **100 requests/hour unauthenticated** and **10,000/day
+authenticated**, signalled by `429` plus a `Retry-After` header.
+
+- **`page[size]=100` on every paginated endpoint.** OSF's JSON:API defaults to
+  10 items per page and caps at 100, so an unqualified listing costs up to 10×
+  the requests it needs. `withPageSize` (pure, in `internal/client/osf.go`) is
+  applied inside each pagination loop, which covers initial URLs, folder
+  `related` hrefs, and `links.next` alike; an existing `page[size]` is left
+  alone so the key is never duplicated.
+- **Bounded retry** (`internal/client/retry.go`). `doGet` retries `429`/`502`/
+  `503`/`504` up to `maxRetries`, honouring `Retry-After` exactly (seconds or
+  HTTP-date). A wait longer than `maxRetryDelay` is **declined, not truncated**:
+  the quota is genuinely spent, and retrying early only earns another 429. The
+  wait goes through `OSFClient.sleep`, injectable in tests and context-aware so
+  Ctrl-C during a throttle still aborts.
+- **Throttling is never mistaken for absence.** `resolver.NotFoundError` +
+  `resolver.IsNotFound` distinguish "this path is not on the remote" from "the
+  request failed". `fetchRemoteState` returns `(nil, nil, nil)` only for the
+  former; everything else is an error. This matters because "absent" classifies
+  an unpinned entry as `NOT_PUSHED`, which under #81 makes `sync` upload it — so
+  folding a 429 into that answer caused spurious re-uploads.
+- **`friendlyAPIError(err, authenticated)`** maps a 429 to an actionable
+  message, and `warnUnauthenticated` warns scanning commands that are anonymous
+  (`config.LoadToken` returns `""` for a locked keychain just as it does for a
+  deliberate anonymous run).
+- **`fakeosf` paginates** (10 default, `page[size]` honoured, capped at 100) and
+  exposes `ListRequests()`, so the request-count reduction is asserted rather
+  than assumed. It previously returned everything in one page with `next: nil`.
+
+What is *not* available: OSF has no bulk/multi-get endpoint, and `?path=` on the
+files endpoint returned the wrong item for a nested path when probed — it is not
+a safe substitute for the tree walk.
+
 ### Scan performance (sync / status pass 1)
 
 Classifying a manifest against the remote is the dominant cost of `sync`/`status`
@@ -607,6 +642,27 @@ All other errors are printed to stderr and exit 1. `rootCmd.SilenceErrors = true
 - Format check: `gofmt -l .` (must print nothing)
 - Vet: `go vet ./...`
 - The OSF API requires no auth for public projects; token elevates to private
+
+### Agent-skill parity (`cmd/skill_doc_test.go`)
+
+`skills/gosf/SKILL.md` is a **shipped artifact** — installed into coding agents
+via skills.sh — and its frontmatter `description` is what decides whether the
+skill loads for a task at all. It has no compiler and drifted silently: the whole
+`gosf wiki` group shipped in v1.9.0 and went undocumented for two releases,
+description included, so agents asked about an OSF wiki were never offered the
+skill.
+
+`cmd/skill_doc_test.go` walks the real cobra tree and asserts:
+
+1. every command path (`gosf wiki add`, …) appears in the skill body;
+2. every non-hidden flag, global and per-command, appears in the skill;
+3. every top-level command name appears in the frontmatter `description`.
+
+Deliberate omissions go in `undocumentedCommands` / `undocumentedFlags` / the
+`excused` map **with a reason** — the point is to force a decision, not to be
+unskippable. It runs in the normal `go test -race ./...` CI step, so adding a
+command or flag without documenting it fails the build. When you add either,
+update the skill in the same PR.
 
 ### Test tiers
 

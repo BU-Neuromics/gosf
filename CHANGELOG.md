@@ -5,6 +5,77 @@ All notable changes to this project will be documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.1.0] - 2026-07-31
+
+Rate-limit resilience. Projects with more than a handful of tracked files were
+hitting `429 Too Many Requests`, and gosf did nothing to avoid, absorb, or
+explain it. Nothing in this release is breaking; upgrading needs no changes.
+
+If you have been seeing 429s, run `gosf auth status` first — OSF allows roughly
+100 requests/hour anonymously against 10,000/day with a token, and gosf used to
+fall back to anonymous silently (see the last entry under **Changed**).
+
+### Fixed
+
+- **A throttled request was indistinguishable from "this file is not on the
+  remote"** (#86). `fetchRemoteState` swallowed every resolve failure and
+  returned "no remote state", so a 429 mid-scan classified an unpinned entry as
+  `NOT_PUSHED` — and since #81 that means `sync` **uploads it**, minting a
+  redundant version of a file that was already there, byte-identical. The
+  resolver now returns a typed `NotFoundError` for genuine absence, and anything
+  else (throttling, an unreachable API, a permission error) fails the scan
+  loudly instead of producing a plan built on wrong states.
+- **`Retry-After` was ignored** (#86). OSF sends it on every 429; gosf had no
+  retry, backoff, or wait of any kind, so a scan simply died. Throttled and
+  transient-gateway responses are now retried up to 3 times, honouring the
+  server's `Retry-After` exactly. A wait longer than 30s is declined rather than
+  truncated — the quota is genuinely spent, and retrying early would only earn
+  another 429 — so the run fails immediately with the number instead of hanging.
+  The wait is context-aware: Ctrl-C during a rate-limit pause still aborts.
+
+### Changed
+
+- **Up to 10× fewer API requests** (#86). OSF's JSON:API serves 10 items per
+  page by default and caps at 100; gosf never sent `page[size]`, so a folder of
+  87 files cost 9 requests instead of 1. Every paginated endpoint (files, nodes,
+  versions, wikis) now asks for the maximum, idempotently — `links.next` already
+  carries the size forward, and a duplicate key would let the server choose.
+  Measured against the fake: listing 87 files went from 10 requests to 2, and a
+  40-file manifest scan from 5 to 2.
+- A 429 now produces an actionable message instead of `OSF API 429: …`. It names
+  whether the run was authenticated, since OSF allows roughly 100 requests/hour
+  anonymously against 10,000/day with a token.
+- Manifest-scanning commands warn when they are running unauthenticated.
+  `config.LoadToken` returns `""` for a locked keychain or a mistyped variable
+  exactly as it does for a deliberate anonymous run, so a user could burn the
+  100/hour allowance never knowing why.
+
+### Internal
+
+- `fakeosf` now paginates like real OSF (10 per page by default, `page[size]`
+  honoured and capped at 100) and counts listing requests. It previously
+  returned every item in one page with `next: nil`, so **no test had ever
+  exercised the multi-page walk** — the code path this release changes was
+  entirely unguarded.
+- CI now checks the agent skill against the CLI (`cmd/skill_doc_test.go`): every
+  command path and flag must appear in `skills/gosf/SKILL.md`, and every
+  top-level command in its frontmatter `description`. Deliberate omissions need
+  an allowlist entry with a reason. Nothing verified this before, which is how
+  the drift below went unnoticed across two releases.
+
+### Documentation
+
+- **The agent skill was missing the entire `gosf wiki` command group**, which
+  shipped in v1.9.0 — nine subcommands, the `[[wikis]]` manifest table, and the
+  content-canonicalization rule. The frontmatter `description` omitted wikis
+  too, so the skill was never even triggered for wiki tasks. Added, along with a
+  wiki workflow. An audit of every documented flag against the binary also fixed
+  `--jobs` being listed as global (it is per-command, and now on bare
+  `push`/`pull` as well), incomplete `pull`/`push` synopses, and `--force` being
+  described with one meaning when it means "discard local modifications" on
+  `sync`/`pull` and "authorize a rollback" on `push`. Skill version 1.1.0 →
+  2.0.0.
+
 ## [2.0.0] - 2026-07-30
 
 A major release because `direction` is gone from the manifest, along with the
