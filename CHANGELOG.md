@@ -5,7 +5,15 @@ All notable changes to this project will be documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [2.1.0] - 2026-07-31
+
+Rate-limit resilience. Projects with more than a handful of tracked files were
+hitting `429 Too Many Requests`, and gosf did nothing to avoid, absorb, or
+explain it. Nothing in this release is breaking; upgrading needs no changes.
+
+If you have been seeing 429s, run `gosf auth status` first — OSF allows roughly
+100 requests/hour anonymously against 10,000/day with a token, and gosf used to
+fall back to anonymous silently (see the last entry under **Changed**).
 
 ### Fixed
 
@@ -49,6 +57,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   returned every item in one page with `next: nil`, so **no test had ever
   exercised the multi-page walk** — the code path this release changes was
   entirely unguarded.
+- CI now checks the agent skill against the CLI (`cmd/skill_doc_test.go`): every
+  command path and flag must appear in `skills/gosf/SKILL.md`, and every
+  top-level command in its frontmatter `description`. Deliberate omissions need
+  an allowlist entry with a reason. Nothing verified this before, which is how
+  the drift below went unnoticed across two releases.
+
+### Documentation
+
+- **The agent skill was missing the entire `gosf wiki` command group**, which
+  shipped in v1.9.0 — nine subcommands, the `[[wikis]]` manifest table, and the
+  content-canonicalization rule. The frontmatter `description` omitted wikis
+  too, so the skill was never even triggered for wiki tasks. Added, along with a
+  wiki workflow. An audit of every documented flag against the binary also fixed
+  `--jobs` being listed as global (it is per-command, and now on bare
+  `push`/`pull` as well), incomplete `pull`/`push` synopses, and `--force` being
+  described with one meaning when it means "discard local modifications" on
+  `sync`/`pull` and "authorize a rollback" on `push`. Skill version 1.1.0 →
+  2.0.0.
 
 ## [2.0.0] - 2026-07-30
 
