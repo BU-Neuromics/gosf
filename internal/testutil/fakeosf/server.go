@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path"
+	"strconv"
 	"strings"
 	"sync"
 )
@@ -121,6 +122,7 @@ type Server struct {
 	validToken string            // when set, /v2/users/me/ requires this exact bearer token
 	forbidden  map[string]bool   // node IDs that respond 403 (simulate private/no-access)
 	versionReq int               // count of GET /v2/files/{id}/versions/ requests
+	listReq    int               // count of file-listing requests (pages, not folders)
 
 	wikis              map[string]*WikiPage // all wiki pages across projects, keyed by wiki ID
 	wikiOrder          map[string][]string  // per-project wiki IDs, most recently modified first
@@ -295,6 +297,16 @@ func (s *Server) VersionsRequests() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.versionReq
+}
+
+// ListRequests returns how many file-listing *pages* the server has served.
+// Because the fake paginates like real OSF (default 10 per page, capped at
+// 100), this is what proves gosf asks for a large page size instead of walking
+// a folder ten items at a time (issue #86).
+func (s *Server) ListRequests() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.listReq
 }
 
 // Deletes returns the file IDs (from /v1/files/{id}/delete) that received a DELETE.
@@ -552,14 +564,75 @@ func (s *Server) handleFileList(w http.ResponseWriter, r *http.Request) {
 		items = folder.Children
 	}
 
-	data := make([]map[string]any, 0, len(items))
-	for _, f := range items {
-		data = append(data, s.fileItemJSON(nodeID, f))
+	s.mu.Lock()
+	s.listReq++
+	s.mu.Unlock()
+
+	page, size := pageParams(r)
+	window, nextPage := paginate(len(items), page, size)
+
+	data := make([]map[string]any, 0, len(window))
+	for _, i := range window {
+		data = append(data, s.fileItemJSON(nodeID, items[i]))
+	}
+	var next any
+	if nextPage > 0 {
+		u := *r.URL
+		q := u.Query()
+		q.Set("page", strconv.Itoa(nextPage))
+		q.Set("page[size]", strconv.Itoa(size))
+		u.RawQuery = q.Encode()
+		next = s.URL() + u.String()
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"data":  data,
-		"links": map[string]any{"next": nil},
+		"links": map[string]any{"next": next, "meta": map[string]any{"total": len(items), "per_page": size}},
 	})
+}
+
+// defaultPageSize and maxServedPageSize mirror real OSF: an unqualified request
+// gets 10 items, and page[size] is honoured up to 100 and silently capped
+// beyond it. gosf's fake used to return everything in one page with next=nil,
+// so no test ever exercised the multi-page walk.
+const (
+	defaultPageSize   = 10
+	maxServedPageSize = 100
+)
+
+// pageParams reads the JSON:API page cursor and size from a request.
+func pageParams(r *http.Request) (page, size int) {
+	page = 1
+	if v, err := strconv.Atoi(r.URL.Query().Get("page")); err == nil && v > 0 {
+		page = v
+	}
+	size = defaultPageSize
+	if v, err := strconv.Atoi(r.URL.Query().Get("page[size]")); err == nil && v > 0 {
+		size = v
+		if size > maxServedPageSize {
+			size = maxServedPageSize
+		}
+	}
+	return page, size
+}
+
+// paginate returns the indices belonging to the requested page and the number
+// of the next page (0 when this is the last).
+func paginate(total, page, size int) (indices []int, nextPage int) {
+	start := (page - 1) * size
+	if start >= total {
+		return nil, 0
+	}
+	end := start + size
+	if end > total {
+		end = total
+	}
+	for i := start; i < end; i++ {
+		indices = append(indices, i)
+	}
+	if end < total {
+		nextPage = page + 1
+	}
+	return indices, nextPage
 }
 
 func (s *Server) handleVersions(w http.ResponseWriter, r *http.Request) {
@@ -608,9 +681,24 @@ func (s *Server) handleVersions(w http.ResponseWriter, r *http.Request) {
 			},
 		})
 	}
+	page, size := pageParams(r)
+	window, nextPage := paginate(len(versions), page, size)
+	pageData := make([]map[string]any, 0, len(window))
+	for _, i := range window {
+		pageData = append(pageData, versions[i])
+	}
+	var next any
+	if nextPage > 0 {
+		u := *r.URL
+		q := u.Query()
+		q.Set("page", strconv.Itoa(nextPage))
+		q.Set("page[size]", strconv.Itoa(size))
+		u.RawQuery = q.Encode()
+		next = s.URL() + u.String()
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"data":  versions,
-		"links": map[string]any{"next": nil},
+		"data":  pageData,
+		"links": map[string]any{"next": next},
 	})
 }
 

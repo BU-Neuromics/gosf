@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"strconv"
 	"time"
@@ -19,6 +20,10 @@ type OSFClient struct {
 	token   string
 	http    *http.Client
 	baseURL string
+	// sleep waits out a rate-limit delay. Injectable so tests exercise the
+	// retry logic without real time passing; it must honour ctx so Ctrl-C
+	// during a throttle wait still aborts the run.
+	sleep func(ctx context.Context, d time.Duration) error
 }
 
 // New returns an OSFClient. Pass an empty token for unauthenticated (public) access.
@@ -32,6 +37,7 @@ func New(token string) *OSFClient {
 		token:   token,
 		http:    &http.Client{Timeout: 30 * time.Second},
 		baseURL: base,
+		sleep:   sleepContext,
 	}
 }
 
@@ -137,12 +143,66 @@ func (e *APIError) Error() string {
 	return fmt.Sprintf("OSF API %d: %s", e.StatusCode, e.Message)
 }
 
+// maxPageSize is the largest page OSF's JSON:API will serve. The default is 10,
+// so a listing that does not ask for a size costs up to 10× the requests it
+// needs — the dominant source of rate-limit pressure on a large manifest
+// (issue #86). Asking for more than 100 is silently capped at 100.
+const maxPageSize = 100
+
+// withPageSize returns rawURL with page[size]=size added, leaving an existing
+// page[size] untouched: OSF's links.next already carries the size forward, and
+// a duplicate key would leave the server to choose between them. A URL that
+// cannot be parsed is returned unchanged — the request will fail on its own
+// terms rather than on a mangled query string.
+func withPageSize(rawURL string, size int) string {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return rawURL
+	}
+	q := u.Query()
+	if q.Has("page[size]") {
+		return rawURL
+	}
+	q.Set("page[size]", strconv.Itoa(size))
+	u.RawQuery = q.Encode()
+	return u.String()
+}
+
 // --- internal HTTP helpers ---
 
+// doGet issues an authenticated GET, retrying throttled and transient-gateway
+// responses with the wait OSF asks for (see retry.go). The retry loop is here
+// rather than in an http.RoundTripper so it can read the parsed status and log
+// a user-visible reason for the pause.
 func (c *OSFClient) doGet(ctx context.Context, url string) ([]byte, int, error) {
+	var body []byte
+	var status int
+
+	for attempt := 0; ; attempt++ {
+		var retryAfter string
+		var err error
+		body, status, retryAfter, err = c.getOnce(ctx, url)
+		if err != nil {
+			return nil, 0, err
+		}
+		d, ok := parseRetryAfter(retryAfter, time.Now())
+		delay := retryDelay(attempt, d, ok)
+		if !shouldRetry(status, attempt, delay) {
+			return body, status, nil
+		}
+		logRetry(status, attempt, delay)
+		if err := c.sleep(ctx, delay); err != nil {
+			return nil, 0, err
+		}
+	}
+}
+
+// getOnce performs a single GET and returns the body, status, and Retry-After
+// header (empty when absent).
+func (c *OSFClient) getOnce(ctx context.Context, url string) ([]byte, int, string, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		return nil, 0, err
+		return nil, 0, "", err
 	}
 	req.Header.Set("Accept", "application/vnd.api+json")
 	if c.token != "" {
@@ -150,11 +210,11 @@ func (c *OSFClient) doGet(ctx context.Context, url string) ([]byte, int, error) 
 	}
 	resp, err := c.http.Do(req)
 	if err != nil {
-		return nil, 0, err
+		return nil, 0, "", err
 	}
 	defer resp.Body.Close()
 	body, err := io.ReadAll(resp.Body)
-	return body, resp.StatusCode, err
+	return body, resp.StatusCode, resp.Header.Get("Retry-After"), err
 }
 
 func (c *OSFClient) getJSON(ctx context.Context, url string, v any) error {
@@ -212,7 +272,7 @@ func (c *OSFClient) listNodesFromURL(ctx context.Context, url string) ([]Node, e
 	var all []Node
 	for url != "" {
 		var page nodesPage
-		if err := c.getJSON(ctx, url, &page); err != nil {
+		if err := c.getJSON(ctx, withPageSize(url, maxPageSize), &page); err != nil {
 			return nil, err
 		}
 		all = append(all, page.Data...)
@@ -268,7 +328,7 @@ func (c *OSFClient) listFilesFromURL(ctx context.Context, url string) ([]FileIte
 	var all []FileItem
 	for url != "" {
 		var page filesPage
-		if err := c.getJSON(ctx, url, &page); err != nil {
+		if err := c.getJSON(ctx, withPageSize(url, maxPageSize), &page); err != nil {
 			return nil, err
 		}
 		all = append(all, page.Data...)
@@ -413,7 +473,7 @@ func (c *OSFClient) listVersionsFromURL(ctx context.Context, url string) ([]File
 	var all []FileVersion
 	for url != "" {
 		var page versionsPage
-		if err := c.getJSON(ctx, url, &page); err != nil {
+		if err := c.getJSON(ctx, withPageSize(url, maxPageSize), &page); err != nil {
 			return nil, err
 		}
 		all = append(all, page.Data...)

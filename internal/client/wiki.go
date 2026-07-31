@@ -122,7 +122,7 @@ func (c *OSFClient) ListWikis(ctx context.Context, nodeID string) ([]Wiki, error
 				Next string `json:"next"`
 			} `json:"links"`
 		}
-		if err := c.getJSON(ctx, url, &page); err != nil {
+		if err := c.getJSON(ctx, withPageSize(url, maxPageSize), &page); err != nil {
 			return nil, err
 		}
 		all = append(all, page.Data...)
@@ -150,7 +150,7 @@ func (c *OSFClient) GetWikiVersions(ctx context.Context, wikiID string) ([]WikiV
 				Next string `json:"next"`
 			} `json:"links"`
 		}
-		if err := c.getJSON(ctx, url, &page); err != nil {
+		if err := c.getJSON(ctx, withPageSize(url, maxPageSize), &page); err != nil {
 			return nil, err
 		}
 		all = append(all, page.Data...)
