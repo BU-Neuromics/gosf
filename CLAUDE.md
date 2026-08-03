@@ -2,8 +2,17 @@
 
 ## Project overview
 
-`gosf` is a Go CLI replacing the stale Python `osfclient` package. Single-binary,
-distributed to researchers. CLI-only (no SDK/library scope).
+`gosf` is a Go CLI that configures and synchronizes the *content* of an OSF
+project — files, folders, metadata, and wiki pages — driven from a repository.
+Scope is OSF project content, not general-purpose data management; it began as an
+effort to build on the Python `osfclient`. Single-binary, distributed to
+researchers. CLI-only (no SDK/library scope).
+
+The motivating use case is authoring a paper's supplemental materials as markdown
+in the repository and reconciling them with a citable OSF project or component, so
+wiki support is a first-class concern rather than an add-on to file transfer. See
+`docs/osf-registration-findings.md` for what OSF registrations can and cannot
+promise about freezing such a supplement.
 
 **Module path:** `github.com/BU-Neuromics/gosf`
 **Binary name:** `gosf`

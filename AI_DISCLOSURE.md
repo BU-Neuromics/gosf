@@ -19,9 +19,9 @@ this documentation.
 
 Adam Labadorf's role was that of **technical director and product owner**:
 
-- **Conceived the project** — identified the gap left by the unmaintained Python
-  `osfclient`, defined the scope as a single-binary Go CLI, and chose the target
-  audience (researchers on HPC systems).
+- **Conceived the project** — set out to build on the Python `osfclient`, defined
+  the scope as a single-binary Go CLI covering OSF project content, and chose the
+  target audience (researchers on HPC systems).
 - **Made all product decisions** — determined which commands to include, the
   `gosf.toml` manifest design, conflict-handling semantics, token priority chain,
   JSON output contract, and the six-state sync model.

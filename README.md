@@ -3,38 +3,100 @@
 [![CI](https://github.com/BU-Neuromics/gosf/actions/workflows/ci.yml/badge.svg)](https://github.com/BU-Neuromics/gosf/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/BU-Neuromics/gosf)](https://github.com/BU-Neuromics/gosf/releases)
 
-`gosf` is a fast, single-binary command-line tool for pushing and pulling files
-to and from the [Open Science Framework](https://osf.io) (OSF). It is a
-maintained replacement for the Python `osfclient`, distributed as a static
-binary with no runtime dependencies.
+The [Open Science Framework](https://osf.io) — free and open, from the Center for
+Open Science — has become one of the research community's most valuable pieces of
+open infrastructure for managing, archiving, and citing the material behind a
+paper.
+
+`gosf` configures and synchronizes the *content* of an OSF project: files,
+folders, metadata, and wiki pages, driven from a repository. You declare what
+belongs in the project in a manifest, keep that manifest under version control
+next to the code that produces the results, and reconcile the two with one
+command.
+
+The case it was built for is authoring a paper's supplemental materials as
+markdown in the repository — prose, figures, tables, generated results — and
+keeping them reconciled with a public, citable OSF project or component. The
+supplement is written where the analysis lives, reviewed alongside the code that
+produced it, and published by running `gosf sync`. What a reader cites and what
+the repository contains stay the same thing.
 
 ```console
+$ gosf sync                                        # reconcile everything the manifest tracks
+$ gosf status                                      # what differs, before you touch anything
+$ gosf wiki push docs/supplement.md abc12:Supplement
 $ gosf pull abc12:/data/results.csv
-$ gosf push ./figures/ abc12:/manuscript/figures/
-$ gosf ls abc12:/data
-$ gosf wiki push docs/home.md abc12:home
 ```
 
 ## Features
 
-- **Single binary** — no Python, no virtualenv; drop it on an HPC node and go.
-- **Push, pull, list, remove** files in OSF Storage, plus project metadata.
-- **Token auth** stored securely in your OS keychain (with a plaintext fallback
-  for headless systems).
-- **Scriptable** — `--output=json` on every command.
+- **Project wikis** — read, write, and sync a project's versioned markdown wiki
+  pages (`gosf wiki`), including manifest-driven sync of local `.md` files. This is
+  how a supplement written in the repository becomes a page on OSF.
+- **Sync manifest** — declare files and wiki pages in `.gosf/gosf.toml` and
+  reconcile them with `gosf sync`; CI-friendly reporting with `gosf status`.
+- **Push, pull, list, remove** files in OSF Storage, plus project and component
+  metadata.
 - **Safe** — `--dry-run` on push/pull/rm, conflict handling on push, a rich
   confirmation before bulk pushes, and state-based gates that refuse to silently
   clobber diverged files.
-- **Idempotent** — pushing or pulling a file that already matches is a no-op; no
-  redundant versions, no needless downloads.
+- **Idempotent** — pushing or pulling something that already matches is a no-op;
+  no redundant versions, no needless downloads.
+- **Scriptable** — `--output=json` on every command.
+- **Token auth** stored securely in your OS keychain (with a plaintext fallback
+  for headless systems).
+- **Single binary** — no Python, no virtualenv; drop it on an HPC node and go.
 - **Progress bars** on transfers and **colorized output** (both auto-off when not
   a TTY or under `--quiet`/`--output=json`; controllable with `--color`).
 - **Ctrl-C aware** — cancels in-flight transfers cleanly and never leaves
   half-downloaded files behind.
-- **Sync manifest** — declare files in `.gosf/gosf.toml` and keep them in sync
-  with `gosf sync`; CI-friendly status with `gosf status`.
-- **Project wikis** — read, write, and sync a project's versioned markdown wiki
-  pages (`gosf wiki`), including manifest-driven sync of local `.md` files.
+
+## Scope
+
+`gosf` configures the content surface of an OSF project or component as a whole:
+the files and folders in OSF Storage, the project's and components' metadata, and
+the wiki pages — not file transfer alone. Its scope is bounded by what OSF is, and
+a manifest describes a project the way you want it to look rather than a sequence
+of transfers to perform. `gosf` is not a general-purpose data management or
+pipeline tool and is not meant to be compared to one; it configures OSF project
+content. It began as an effort to build on
+[`osfclient`](https://github.com/osfclient/osfclient), the Python library and CLI
+for OSF file transfer, and grew into a tool covering project content more broadly.
+
+## Identifiers and persistence
+
+What you can cite when you manage a supplement with `gosf`, and what each
+identifier actually promises:
+
+- **A wiki page has a persistent URL, but no DOI of its own.** The citable
+  identifier is the enclosing project's or component's. There is no per-page DOI to
+  put in a reference list.
+- **Project and component DOIs resolve to current state.** Pushing a wiki revision
+  changes what that DOI shows. A citation to a live project DOI pins the *object*,
+  not the version of the supplement a reader or reviewer saw.
+- **A registration is frozen and separately DOI'd**, which is how a supplement gets
+  pinned at submission time. Registering copies wiki content *and its full version
+  history* into a read-only snapshot with its own identifier. Two caveats worth
+  knowing before you rely on it, both detailed in
+  [`docs/osf-registration-findings.md`](./docs/osf-registration-findings.md):
+  - **Embedded figures are not necessarily frozen with the text.** OSF's wiki
+    editor references dropped images by a storage link into the *live* project that
+    names no particular file version, and registration copies wiki content
+    verbatim without rewriting those links. Re-uploading a figure can therefore
+    change what an already-registered wiki renders. If a frozen figure matters,
+    reference it by a URL that pins an explicit file revision.
+  - **A registration is not public the instant you create it.** It starts private
+    and pending, and its DOI appears when it becomes public — after an admin
+    approves it or the 48-hour approval window elapses. Plan for that lag rather
+    than registering on the day of submission.
+- **Recommended pattern: one public component per paper**, with its own DOI and its
+  own wiki. A component registers independently of its parent and carries its own
+  identifier, which makes it the natural unit for a single paper's supplement.
+
+`gosf` does not create registrations today; the findings document works out what
+such a command could and could not promise. Claims here are sourced to OSF's own
+documentation and implementation, and the findings document marks which are
+verified and which still need a live check.
 
 ## For coding agents
 

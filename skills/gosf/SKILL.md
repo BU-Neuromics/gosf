@@ -1,15 +1,21 @@
 ---
 name: gosf
-description: "Use when working with the Open Science Framework (OSF) for research data management. Invoke when: the project contains a .gosf/gosf.toml manifest; the user mentions OSF, osf.io, or osfclient; the task involves syncing, pushing, or pulling research data files with an OSF project; the task involves an OSF project wiki or its markdown pages; or you need to inspect, manage, or automate files stored in OSF Storage. Covers the full gosf CLI: manifest management (gosf init / add / status / sync), file transfer (gosf pull / push / rm), storage management (gosf mkdir / mv / cp), project navigation (gosf ls / info / projects / versions / open / set), project wikis (gosf wiki ls / get / push / rm / mv / versions / open / add), and authentication (gosf auth)."
+description: "Use when configuring or synchronizing the content of an Open Science Framework (OSF) project — its wiki pages, files, folders, and metadata — from a repository. Invoke when: the project contains a .gosf/gosf.toml manifest; the user mentions OSF, osf.io, or osfclient; the task involves an OSF project wiki or its markdown pages, such as authoring or publishing supplemental materials for a paper; the task involves syncing, pushing, or pulling research data files with an OSF project; or you need to inspect, manage, or automate files stored in OSF Storage. Covers the full gosf CLI: project wikis (gosf wiki ls / get / push / rm / mv / versions / open / add), manifest management (gosf onboard / init / add / status / sync), file transfer (gosf pull / push / rm), storage management (gosf mkdir / mv / cp), project navigation (gosf ls / info / projects / versions / open / set), and authentication (gosf auth)."
 metadata:
   version: "2.0.0"
 ---
 
 # gosf — Open Science Framework CLI
 
-`gosf` is a single-binary CLI for pushing, pulling, and syncing files with
-the [Open Science Framework](https://osf.io) (OSF). It replaces the
-unmaintained Python `osfclient`.
+`gosf` configures and synchronizes the content of an
+[Open Science Framework](https://osf.io) (OSF) project — wiki pages, files,
+folders, and metadata — driven from a repository. A manifest
+(`.gosf/gosf.toml`) declares what belongs in the project; `gosf sync` reconciles
+the two.
+
+Its scope is OSF project content, not general-purpose data management. A common
+use is authoring a paper's supplemental materials as markdown in the repository
+and keeping them reconciled with a citable OSF project or component.
 
 ## Installation
 
