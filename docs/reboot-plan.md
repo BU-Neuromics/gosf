@@ -385,6 +385,7 @@ type Caps struct {
     MultipartUpload            bool
     MaxFileSize, MaxRecordSize int64
     MaxFilesPerRecord          int
+    VersionIndex               string // "native" | "journal" | "none" (see §4.7)
     ChecksumAlgo               string
     ServerVerifiesChecksum     bool
     Embargo                    bool
@@ -562,12 +563,35 @@ Workspace backends, in priority order:
 3. **SFTP/SSH** — every cluster has it; results can live on lab storage
    with no third-party service at all.
 
-Degradation is conservative, never silent: a workspace backend without
+**Version journal for history-less backends.** A workspace backend without
 server-side version history (plain S3, SFTP) exposes only the latest remote
-state, so `BEHIND` (local matches an *older* remote version) can no longer
-be proven and such cases classify as `DIVERGED`, requiring an explicit
-`--resolve`/`--force`. Caps (`FileVersions: false`) declares this; OSF and
-versioned buckets keep the full matrix.
+state, so `BEHIND` (local matches an *older* remote version) could not be
+proven. datapin closes that gap by keeping its own history *on the remote*:
+an **append-only version journal** under a reserved `.datapin/` prefix —
+one small immutable JSON object per push event
+(`.datapin/journal/<key>/<seq>-<md5>.json`: key, MD5, size, timestamp,
+pusher). Classification consults the journaled MD5s, restoring the full
+BEHIND/DIVERGED distinction everywhere. Rules that keep it sound:
+
+- **Append-only objects, never a mutable index** — no read-modify-write, so
+  concurrent pushes cannot corrupt history (S3 conditional PUTs / SFTP
+  rename-into-place cover the residual naming race).
+- **The journal is evidence, never authority.** Remotes can be touched
+  out-of-band (`scp` over a result on the cluster). If the observed object
+  MD5 disagrees with the newest journal entry, observed state wins, the
+  history is treated as incomplete, and classification degrades
+  conservatively (`DIVERGED`, explicit `--resolve`/`--force`) — the journal
+  only ever *upgrades* safety knowledge, never overrides reality.
+- **Metadata history ≠ byte history.** The journal restores classification;
+  restoring an *older version's bytes* (rollback, pinned-version pull)
+  additionally needs opt-in retention (`retain = N` per remote), which
+  archives superseded blobs under `.datapin/versions/<key>/<md5>` before
+  overwrite, plus a `gc`. Default off; rollback to an unretained version is
+  refused with the reason stated.
+- **Native beats journal.** Where the backend has real versioning (OSF,
+  S3 buckets with versioning enabled), use it and skip the journal — Caps
+  records `VersionIndex: native | journal | none` per configured remote, so
+  the journal stays a fallback, not a parallel system.
 
 ---
 
