@@ -385,7 +385,7 @@ type Caps struct {
     MultipartUpload            bool
     MaxFileSize, MaxRecordSize int64
     MaxFilesPerRecord          int
-    VersionIndex               string // "native" | "journal" | "none" (see §4.7)
+    VersionScheme              string // "native" | "datapin" — versioning itself is invariant (§4.7)
     ChecksumAlgo               string
     ServerVerifiesChecksum     bool
     Embargo                    bool
@@ -558,40 +558,63 @@ Workspace backends, in priority order:
 2. **S3-compatible** (institutional object storage, MinIO, Cloudflare R2) —
    flat keys, ubiquitous near clusters. Multipart ETags are not MD5s, so
    the local manifest pin is the checksum source of truth (optionally
-   mirrored to `x-amz-meta-md5`); bucket versioning, where enabled, restores
-   per-file history.
+   mirrored to `x-amz-meta-md5`); bucket versioning, where enabled, provides
+   the `native` scheme, otherwise the `datapin` scheme applies (below).
 3. **SFTP/SSH** — every cluster has it; results can live on lab storage
    with no third-party service at all.
 
-**Version journal for history-less backends.** A workspace backend without
-server-side version history (plain S3, SFTP) exposes only the latest remote
-state, so `BEHIND` (local matches an *older* remote version) could not be
-proven. datapin closes that gap by keeping its own history *on the remote*:
-an **append-only version journal** under a reserved `.datapin/` prefix —
-one small immutable JSON object per push event
-(`.datapin/journal/<key>/<seq>-<md5>.json`: key, MD5, size, timestamp,
-pusher). Classification consults the journaled MD5s, restoring the full
-BEHIND/DIVERGED distinction everywhere. Rules that keep it sound:
+**Versioning is an interface invariant.** Every workspace remote presents
+the same versioning surface — `Versions(key)`, download-of-version, and
+explicit reversion — *regardless of native support*. There is no
+`FileVersions: false`; adapters differ only in **scheme**, selected per
+remote at `remote add` (auto-probed — S3 `GetBucketVersioning`, OSF always
+native — with manual override in config):
 
-- **Append-only objects, never a mutable index** — no read-modify-write, so
-  concurrent pushes cannot corrupt history (S3 conditional PUTs / SFTP
-  rename-into-place cover the residual naming race).
-- **The journal is evidence, never authority.** Remotes can be touched
-  out-of-band (`scp` over a result on the cluster). If the observed object
-  MD5 disagrees with the newest journal entry, observed state wins, the
-  history is treated as incomplete, and classification degrades
-  conservatively (`DIVERGED`, explicit `--resolve`/`--force`) — the journal
-  only ever *upgrades* safety knowledge, never overrides reality.
-- **Metadata history ≠ byte history.** The journal restores classification;
-  restoring an *older version's bytes* (rollback, pinned-version pull)
-  additionally needs opt-in retention (`retain = N` per remote), which
-  archives superseded blobs under `.datapin/versions/<key>/<md5>` before
-  overwrite, plus a `gc`. Default off; rollback to an unretained version is
-  refused with the reason stated.
-- **Native beats journal.** Where the backend has real versioning (OSF,
-  S3 buckets with versioning enabled), use it and skip the journal — Caps
-  records `VersionIndex: native | journal | none` per configured remote, so
-  the journal stays a fallback, not a parallel system.
+- **`native`** — the backend's own history (OSF file versions, versioned S3
+  buckets) mapped onto the common surface. Captures out-of-band writes too.
+- **`datapin`** — a deliberately simple, unoptimized scheme the adapter
+  implements itself under a reserved `.datapin/` prefix:
+  - current bytes live at the plain key (the remote stays a browsable
+    plain-file layout); before overwrite, the superseded object is archived
+    to `.datapin/versions/<key>/<md5>` via **server-side copy** (S3
+    CopyObject — no bytes transit; SFTP copy/link);
+  - one **append-only journal event** per write —
+    `.datapin/journal/<key>/<seq>-<md5>.json` (key, MD5, size, timestamp,
+    pusher, action) — never a mutable index, so concurrent pushes cannot
+    corrupt history (conditional PUT / rename-into-place covers the
+    residual naming race);
+  - **crash-safe by idempotence, not transactions**: archives are
+    content-addressed (re-copy is a no-op) and the journal entry is written
+    last, so recovery from any crash is "re-run the push";
+  - **revert is a new version, git-style**: `revert --to <n>` copies the
+    archived blob back and appends `{action: "revert", to: n, reason}` —
+    history never rewrites, and the journal reads as a narrative of what
+    happened (the explainability goal);
+  - per-key dedup falls out of MD5-addressed archives; cross-key dedup is
+    deliberately out of scope (that's DVC's content-addressed cache).
+
+Rules that keep it sound: **the journal is evidence, never authority** — if
+the observed object MD5 disagrees with the journal head, observed state
+wins, history is treated as incomplete, and classification degrades
+conservatively (`DIVERGED`, explicit `--resolve`/`--force`). And the
+invariant is stated precisely: **every version datapin wrote is
+revertible.** On `datapin`-scheme remotes an out-of-band overwrite (`scp`
+over a result) loses bytes nothing archived; datapin detects it, says so,
+and reports that version as unrecoverable with the reason — it never
+pretends otherwise.
+
+Retention is default-on (the invariant requires bytes), so cost is managed
+explicitly: `datapin gc --keep N` reclaims archived versions and `status`
+reports retained bytes per remote.
+
+**Build vs buy**: [OCFL](https://ocfl.io/) (the archival-community standard
+for versioned object layouts; Go: [srerickson/ocfl-go](https://github.com/srerickson/ocfl-go))
+is the one serious candidate for buying this — but its mutable per-object
+`inventory.json` reintroduces the read-modify-write concurrency problem the
+append-only journal avoids, and it models curated preservation objects, not
+high-churn sync targets. restic/git-based stores are optimized-and-
+complicated. Conclusion: bespoke dumb layout as above; OCFL noted as a
+consciously-diverged-from standard and a possible future export format.
 
 ---
 
@@ -610,7 +633,9 @@ gives way to dataset slugs.
 | `gosf pull [<slug>]` | download from workspace (or `--archive` for published bytes); `--track-only` mirrors today |
 | `gosf sync` | reconcile local ↔ workspace per the gate matrix, non-interactive |
 | `gosf publish [<slug>]` | **archive** promotion: preview plan (files, sizes, MD5s, DOI to be minted, **PUBLIC warning**) → confirm → draft/upload/publish transaction → print DOI + citation |
-| `gosf versions <slug>` | version chain with DOIs, dates, sizes |
+| `gosf versions <slug>[/<key>]` | version chain — record versions with DOIs on archives; per-file journal/native history on workspaces (works on **every** remote, §4.7) |
+| `gosf revert <slug>/<key> --to <n>` | explicit, journaled restore of an earlier version; appends a revert event with reason, never rewrites history |
+| `gosf gc [--keep N]` | reclaim archived workspace versions; `status` reports retained bytes |
 | `gosf check [--fair]` | metadata/preflight linter; F-UJI on published DOIs |
 | `gosf export [--datapackage] [--ro-crate]` | emit standard metadata files |
 | `gosf open <slug>` | record landing page (or `--site` page) in browser |
