@@ -2,6 +2,14 @@
 
 **Status:** proposal · **Date:** 2026-08-10 · **Author:** research sweep + plan by Claude, commissioned by @labadorf
 
+> **Decision log (2026-08-10):** the reboot is named **`datapin`**, developed
+> in a **fresh repository** seeded with gosf's commit history (branch pushed
+> without tags; gosf archived with a pointer once datapin reaches parity).
+> Remotes carry a **workspace vs archive role** (§4.7) so the founding
+> "portable intermediate results" workflow stays first-class and DOI-free
+> until the user explicitly publishes. Command examples below are written as
+> `gosf`; read them as `datapin`.
+
 This document is the outcome of a research sweep across FAIR/open-data best
 practices, repository platforms and their APIs, the existing tool landscape,
 and static-site strategies. It proposes a concrete architecture, CLI surface,
@@ -267,13 +275,17 @@ of a mutable file tree, and the wiki becomes a generated site.
 the outputs." Publication, citation, and documentation of final artifacts —
 not working-data versioning.
 
-**Naming.** `gosf` reads as "Go OSF", which stops being true after the
-pivot. Options: keep **`gosf`** re-backronymed ("go share files" / "go
-science files") — cheapest, preserves the brand, release history, and the
-skills.sh install base — or rename to something that says what it does
-(`datapub`, `depo`, `godep`-style deposit verbs). Re-backronyming is the
-recommendation and this plan assumes it; every command in this doc is
-written as `gosf`. The final call is the maintainer's (§9).
+**Naming — decided: `datapin`.** With no install base, the rename is free.
+`datapin` names the tool's actual differentiator — nothing else in the
+landscape *pins* published data versions (version + MD5) and verifies
+against the pin; everything else is one-shot push. It reads well as a
+command (`datapin push`, `datapin sync`, `datapin publish`), has a friendly
+conceptual precedent in Posit's `pins` R package while staying distinct,
+and a collision sweep found no existing software squatting the name
+(rejected alternatives: `datapub` — taken by datopian's CKAN framework;
+`fairpub` — archived R package; `datamint`, `stele` — crowded/taken).
+Command examples in this doc remain written as `gosf` for continuity with
+the codebase being described; read them as `datapin`.
 
 ---
 
@@ -402,13 +414,14 @@ Design rules:
 schema = 2
 
 [project]
-name        = "cortical-rnaseq-2026"
-default_remote = "zenodo"          # named remote from config
+name              = "cortical-rnaseq-2026"
+default_workspace = "osf"          # mutable sync target (see §4.7); "" = none
+default_archive   = "zenodo"       # DOI-minting publish target
 
 # ── one dataset = one publishable record with a DOI ──────────────
 [[datasets]]
 slug    = "counts"                 # local handle; also the site page slug
-remote  = "zenodo"                 # optional override of default_remote
+archive = "zenodo"                 # optional override of default_archive
 record  = "4d0ns-ntd89"            # concept/parent record id; "" until first publish
 concept_doi = "10.5281/zenodo.1234567"
 version     = 3                    # pinned version index; 0 = not yet published
@@ -505,6 +518,57 @@ names like `ZENODO_TOKEN`) > config > OS keychain. GitHub token for site
 publish has its own ladder (§2.6). Never echo tokens; anonymous reads work
 on every backend that allows them.
 
+### 4.7 Remote roles: workspace vs archive (portable intermediate results)
+
+The founding gosf use case — run the analysis on the compute cluster, push
+the results, `git clone` the repo on a laptop, pull the results back
+alongside the code — must survive the pivot, and must not require DOIs,
+metadata, or a publication decision. Publication repositories are the wrong
+tool for it: published versions are immutable, every push would mint a DOI,
+and drafts/quotas/rate limits are designed around publishing, not iterating.
+(Zenodo drafts are explicitly not working storage.)
+
+So a configured remote carries a **role**, and the verbs split along it:
+
+- **workspace** — mutable, cheap, no PID. `push`/`pull`/`sync`/`status`
+  operate here with *exactly today's gosf semantics*: the manifest pins
+  version + MD5 per file, `ClassifyFile` and the gate matrix arbitrate,
+  transfers are idempotent, `--dry-run`/`--force`/`--resolve` all behave as
+  they do now. Because the manifest is committed to git, cloning the repo
+  anywhere and running `datapin pull` reproduces the pinned results — **the
+  manifest is the portability mechanism**. No git hooks, no smudge filters,
+  no pointer files, no content-addressed cache directory: files stay plain
+  files in the working tree, state stays in one readable TOML, and the tool
+  stays one static binary. That is the deliberate contrast with
+  git-lfs/git-annex/DVC; the traded-away features (dedup cache, pipeline
+  graphs) are exactly the ones this plan already delegates to DVC.
+- **archive** — immutable, DOI-minting. `datapin publish <slug>` promotes a
+  dataset's pinned file set through the record transaction of §4.1 and
+  writes the concept/version DOIs back to the manifest. Metadata
+  completeness (`gosf check`) is enforced only at this boundary — a dataset
+  with no `[datasets.metadata]` block is perfectly valid while it only
+  syncs to a workspace.
+
+Workspace backends, in priority order:
+
+1. **OSF** — already written; it is today's gosf (mutable tree, per-file
+   versions, MD5s). Carrying it over as the first workspace backend means
+   existing workflows keep working from day one of the reboot.
+2. **S3-compatible** (institutional object storage, MinIO, Cloudflare R2) —
+   flat keys, ubiquitous near clusters. Multipart ETags are not MD5s, so
+   the local manifest pin is the checksum source of truth (optionally
+   mirrored to `x-amz-meta-md5`); bucket versioning, where enabled, restores
+   per-file history.
+3. **SFTP/SSH** — every cluster has it; results can live on lab storage
+   with no third-party service at all.
+
+Degradation is conservative, never silent: a workspace backend without
+server-side version history (plain S3, SFTP) exposes only the latest remote
+state, so `BEHIND` (local matches an *older* remote version) can no longer
+be proven and such cases classify as `DIVERGED`, requiring an explicit
+`--resolve`/`--force`. Caps (`FileVersions: false`) declares this; OSF and
+versioned buckets keep the full matrix.
+
 ---
 
 ## 5. CLI surface
@@ -518,9 +582,10 @@ gives way to dataset slugs.
 | `gosf remote add/ls/rm` | configure backends (probe Caps, store token) |
 | `gosf add <local>... --dataset <slug>` | add files to a dataset (creates it, prompting/deriving metadata) |
 | `gosf status` | classify all datasets/files (L/B/R), read-only, CI exit codes — as today |
-| `gosf push [<slug>]` | publish transaction: preview plan (files, sizes, MD5s, DOI to be minted, **PUBLIC warning**) → confirm → draft/upload/publish → print DOI + citation |
-| `gosf pull [<slug>]` | download pinned (or `--latest`) version; `--track-only` mirrors today |
-| `gosf sync` | reconcile everything per the gate matrix, non-interactive |
+| `gosf push [<slug>]` | sync local → **workspace** remote, today's semantics (plan, confirm, idempotent, gates) |
+| `gosf pull [<slug>]` | download from workspace (or `--archive` for published bytes); `--track-only` mirrors today |
+| `gosf sync` | reconcile local ↔ workspace per the gate matrix, non-interactive |
+| `gosf publish [<slug>]` | **archive** promotion: preview plan (files, sizes, MD5s, DOI to be minted, **PUBLIC warning**) → confirm → draft/upload/publish transaction → print DOI + citation |
 | `gosf versions <slug>` | version chain with DOIs, dates, sizes |
 | `gosf check [--fair]` | metadata/preflight linter; F-UJI on published DOIs |
 | `gosf export [--datapackage] [--ro-crate]` | emit standard metadata files |
@@ -615,12 +680,16 @@ draft-listing behavior, empty-file and >100-file rejections. Deliverable: a
 `docs/zenodo-notes.md` of confirmed behaviors + the first `fakeinvenio`
 test fixtures derived from real responses.
 
-**Phase 1 — core + Zenodo (MVP).** `internal/backend` interface,
-`invenio` driver + Zenodo profile, manifest v2 (Load/Save/validation),
-gate-matrix aggregation to dataset transactions, `init/remote/add/status/
-push/pull/sync/versions/auth`, `fakeinvenio` + sandbox live tier, JSON
-contracts, skill update. Exit criterion: publish → new version → sync
-round-trip green on sandbox, idempotent re-runs, DOI printed.
+**Phase 1 — core + Zenodo (MVP).** `internal/backend` interface with
+**workspace/archive roles** (§4.7), the OSF adapter carried over as the
+first workspace backend (existing workflows keep working day one),
+`invenio` driver + Zenodo profile as the first archive backend, manifest v2
+(Load/Save/validation), gate-matrix aggregation to dataset transactions,
+`init/remote/add/status/push/pull/sync/publish/versions/auth`,
+`fakeinvenio` + sandbox live tier, JSON contracts, skill update. Exit
+criteria: cluster→laptop workspace round-trip identical to gosf today, and
+publish → new version → sync green on sandbox with idempotent re-runs and
+the DOI printed.
 
 **Phase 2 — metadata & FAIR floor.** `internal/meta` model + linter
 (`gosf check`), SPDX/ORCID/ROR validation, related identifiers,
@@ -636,10 +705,12 @@ theme, dataset landing pages with JSON-LD/citations/checksums, sitemap,
 real: chunked upload, reserve-DOI, `.vN` DOIs, no files-import), contract
 suite over both, `check --fair` (F-UJI), onboard flow rewrite.
 
-**Phase 5 — breadth (as demanded).** Dataverse (no Go client exists —
-publishable as its own library), generic InvenioRDM remotes
-(institutional repos), embargo/restricted access, Cloudflare Pages deploy,
-DVC interop (read `dvc.lock` hashes). Dryad only if users materialize.
+**Phase 5 — breadth (as demanded).** **S3-compatible and SFTP workspace
+backends** (§4.7 — frees the workspace tier from OSF's fate), Dataverse
+(no Go client exists — publishable as its own library), generic InvenioRDM
+remotes (institutional repos), embargo/restricted access, Cloudflare Pages
+deploy, DVC interop (read `dvc.lock` hashes). Dryad only if users
+materialize.
 
 Each phase lands via the existing TDD discipline (red/green/refactor,
 regression tests for every bug) and the existing CI matrix; goreleaser and
@@ -647,20 +718,25 @@ install scripts carry over unchanged.
 
 ---
 
-## 9. Decisions needed from the maintainer
+## 9. Decisions
 
-1. **Name**: keep `gosf` (re-backronymed) vs rename. Renaming resets the
-   skills.sh install base and release history; keeping it costs an
-   explanation line in the README. Plan assumes keep.
-2. **Repo strategy**: evolve this repo in place (major-version v3, OSF
-   adapter retained) vs fresh repo. Plan assumes in-place — the test
-   infrastructure and CI are too valuable to fork away from.
-3. **OSF adapter lifespan**: transition-only or permanent backend?
-4. **Default license suggestion**: CC0-1.0 (recommended for data) vs
+1. **Name** — ✅ **decided: `datapin`** (2026-08-10). Fresh brand; no
+   collision found; re-registers on skills.sh under the new repo.
+2. **Repo strategy** — ✅ **decided: fresh repository**, seeded with gosf's
+   commit history (push the `dev` branch without tags, so blame and
+   regression-test context survive while releases/issues start clean at
+   v0.1.0). gosf is archived with a pointer README once datapin reaches
+   parity; settings to recreate: branch protection, `dev` default branch,
+   and a `ZENODO_SANDBOX_TOKEN` secret replacing `OSF_TEST_TOKEN`.
+3. **OSF adapter lifespan** — reframed by §4.7: OSF ships as the first
+   *workspace* backend (not a publication target) and remains until
+   S3/SFTP workspace backends land and users migrate; its lifespan is
+   ultimately tied to COS's.
+4. **Default license suggestion** (open): CC0-1.0 (recommended for data) vs
    CC-BY-4.0 — affects `init`/`onboard` wording only.
-5. **Wiki parity scope**: is one-way (local markdown → site) enough, or do
-   OSF-wiki-style server-side edits need a path back? Plan assumes one-way;
-   the site is generated, git is the editor.
+5. **Wiki parity scope** (open): is one-way (local markdown → site) enough,
+   or do OSF-wiki-style server-side edits need a path back? Plan assumes
+   one-way; the site is generated, git is the editor.
 
 ---
 
